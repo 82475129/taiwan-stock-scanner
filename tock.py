@@ -102,21 +102,20 @@ if auto_monitor or submit:
                 df = yf.download(sid, period="60d", progress=False, timeout=5)
                 if df.empty or len(df) < 30: continue
                 
-                # 數據結構安全處理
-                close_series = df['Close'].iloc[-1]
-                price = float(close_series.values[0] if isinstance(close_series, pd.Series) else close_series)
-                vol = int(df['Volume'].iloc[-1] / 1000)
+                # 安全提取數值
+                close_vals = df['Close'].values.flatten()
+                price = float(close_vals[-1])
+                vol = int(df['Volume'].values.flatten()[-1] / 1000)
                 
                 # 過濾判定
                 if not input_sid:
                     if vol < min_v: continue
                     if ma_on:
-                        ma20 = df['Close'].rolling(20).mean().iloc[-1]
+                        ma20 = df['Close'].rolling(20).mean().iloc[-1].values[0]
                         if price < ma20: continue
 
                 labels, lines, is_tri, is_vol, is_box = _analyze_patterns(df)
                 
-                # 無過濾邏輯：只要有勾選的形態被偵測到，就顯示
                 show = False
                 if input_sid: show = True
                 if m1 and is_tri: show = True
@@ -130,18 +129,21 @@ if auto_monitor or submit:
 
     # --- [ 5. 細緻圖表輸出 ] ---
     if results:
-        # --- [ 新增：首頁總覽列表 ] ---
+        # --- [ 首頁總覽列表 ] ---
         st.subheader("📋 形態掃描追蹤清單")
         
         summary_list = []
         for item in results:
+            # 修正處：使用 .flatten().tolist() 確保數據是一維列表
+            trend_data = item["df"]['Close'].values.flatten().tolist()
+            
             summary_list.append({
                 "代號": item["id"],
                 "名稱": item["name"],
                 "現價": item["price"],
                 "成交(張)": item["vol"],
                 "符合形態": " | ".join(item["labels"]),
-                "40日走勢": item["df"]['Close'].tolist()
+                "40日走勢": trend_data
             })
         
         df_summary = pd.DataFrame(summary_list)
@@ -163,7 +165,6 @@ if auto_monitor or submit:
         
         st.divider() 
         
-        # 原有的詳細圖表循環
         for item in results:
             with st.container():
                 lbl_html = "".join([f'<span class="tag {"tag-tri" if "三角" in l else "tag-vol" if "爆量" in l else "tag-box"}">{l}</span>' for l in item['labels']])
@@ -179,18 +180,22 @@ if auto_monitor or submit:
                 sh, ih, sl, il = item['lines']
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
                 
-                # K線與均線
-                fig.add_trace(go.Candlestick(x=d.index, open=d['Open'], high=d['High'], low=d['Low'], close=d['Close'],
+                # K線
+                fig.add_trace(go.Candlestick(x=d.index, open=d['Open'].values.flatten(), high=d['High'].values.flatten(), 
+                                            low=d['Low'].values.flatten(), close=d['Close'].values.flatten(),
                     increasing_line_color='#ff4d4d', decreasing_line_color='#00b050', name="K線"), row=1, col=1)
                 
-                # 趨勢線 (繪製最近 30 天)
+                # 趨勢線
                 xv = np.arange(30)
                 fig.add_trace(go.Scatter(x=d.index[-30:], y=sh*xv + ih, line=dict(color='red', width=2, dash='dash'), name="壓力"), row=1, col=1)
                 fig.add_trace(go.Scatter(x=d.index[-30:], y=sl*xv + il, line=dict(color='green', width=2, dash='dot'), name="支撐"), row=1, col=1)
 
                 # 成交量
-                colors = ['#ff4d4d' if c >= o else '#00b050' for o, c in zip(d['Open'], d['Close'])]
-                fig.add_trace(go.Bar(x=d.index, y=d['Volume'], marker_color=colors, name="成交量"), row=2, col=1)
+                vol_vals = d['Volume'].values.flatten()
+                open_vals = d['Open'].values.flatten()
+                close_vals = d['Close'].values.flatten()
+                colors = ['#ff4d4d' if c >= o else '#00b050' for o, c in zip(open_vals, close_vals)]
+                fig.add_trace(go.Bar(x=d.index, y=vol_vals, marker_color=colors, name="成交量"), row=2, col=1)
 
                 fig.update_layout(height=450, template="plotly_white", xaxis_rangeslider_visible=False, showlegend=False, margin=dict(l=10,r=10,t=10,b=10))
                 st.plotly_chart(fig, use_container_width=True, key=f"f_{item['id']}")
