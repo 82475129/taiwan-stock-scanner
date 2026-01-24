@@ -15,14 +15,16 @@ from streamlit_autorefresh import st_autorefresh
 def _engine_core_fetch():
     codes = {}
     try:
+        # 抓取台股各產業分類
         for s_id in range(1, 34):
             for ex in ["TAI", "TWO"]:
                 r = requests.get(f"https://tw.stock.yahoo.com/class-quote?sectorId={s_id}&exchange={ex}", timeout=10)
                 soup = BeautifulSoup(r.text, "html.parser")
                 for li in soup.find_all("li", class_="List(n)"):
-                    sid = li.find("span", string=re.compile(r"\d{4}\.(TW|TWO)"))
-                    sn = li.find("div", class_="Lh(20px) Fw(600) Fz(16px) Ell")
-                    if sid and sn: codes[sid.text.strip()] = sn.text.strip()
+                    sid_element = li.find("span", string=re.compile(r"\d{4}\.(TW|TWO)"))
+                    sn_element = li.find("div", class_="Lh(20px) Fw(600) Fz(16px) Ell")
+                    if sid_element and sn_element:
+                        codes[sid_element.text.strip()] = sn_element.text.strip()
     except: pass
     return codes
 
@@ -67,7 +69,7 @@ with st.sidebar:
     st.markdown("## 🎯 決策中心")
     
     st.write("### 📡 監控狀態")
-    auto_monitor = st.toggle("開啟自動監控", value=True)
+    auto_monitor = st.toggle("開啟自動監控", value=False)
     if auto_monitor:
         st_autorefresh(interval=300000, key="auto_pilot")
         st.info("📡 系統正在即時巡航中...")
@@ -92,24 +94,27 @@ with st.sidebar:
 if auto_monitor or submit:
     with st.status("🔍 正在讀取數據...", expanded=True) as status:
         results = []
+        market_data = _engine_core_fetch() # 先抓取名稱表
         
         # 決定目標清單
         if input_sid:
-            # 如果有輸入代號，只查該股票
             s_clean = input_sid.strip().upper()
-            suffix = ".TWO" if len(s_clean) == 4 and s_clean.startswith(('5','6','8')) else ".TW" # 簡單判斷上櫃與否
-            targets = [(f"{s_clean}{suffix}", "手動查詢")]
+            # 建立可能的 Yahoo Finance 代號
+            possible_sids = [f"{s_clean}.TW", f"{s_clean}.TWO"]
+            targets = []
+            for p_sid in possible_sids:
+                # 優先從名稱表找名稱，找不到則顯示代號
+                name = market_data.get(p_sid, f"個股 {s_clean}")
+                targets.append((p_sid, name))
         else:
-            # 否則執行全市場掃描
-            market_data = _engine_core_fetch()
             targets = list(market_data.items())[:scan_limit]
 
         for sid, sname in targets:
             try:
+                # 若手動查詢則放寬時間範圍確保抓到
                 df = yf.download(sid, period="60d", progress=False, timeout=5)
                 if df.empty or len(df) < 30: continue
                 
-                # 安全提取數值
                 close_vals = df['Close'].values.flatten()
                 price = float(close_vals[-1])
                 vol = int(df['Volume'].values.flatten()[-1] / 1000)
@@ -123,16 +128,17 @@ if auto_monitor or submit:
 
                 labels, lines, is_tri, is_vol, is_box = _analyze_patterns(df)
                 
-                # 顯示判定
                 show = False
                 if input_sid: 
+                    # 如果是手動查詢，只要有數據就顯示
                     show = True
-                    if not labels: labels = ["🔍 個股追蹤"] # 手動查詢若無形態則標註
+                    if not labels: labels = ["🔍 個股追蹤"]
                 elif (m1 and is_tri) or (m2 and is_box) or (m4 and is_vol):
                     show = True
                 
                 if show:
                     results.append({"id": sid, "name": sname, "df": df.tail(40), "lines": lines, "labels": labels, "price": price, "vol": vol})
+                    if input_sid: break # 手動查詢若找到一個後綴正確就停止
             except: continue
         status.update(label="✅ 處理完成", state="complete")
 
@@ -148,8 +154,8 @@ if auto_monitor or submit:
                 "名稱": item["name"],
                 "現價": item["price"],
                 "成交(張)": item["vol"],
-                "符合狀態": " | ".join(item["labels"]),
-                "40日走勢": trend_data
+                "狀態/形態": " | ".join(item["labels"]),
+                "近期走勢": trend_data
             })
         
         df_summary = pd.DataFrame(summary_list)
@@ -157,10 +163,11 @@ if auto_monitor or submit:
             df_summary,
             column_config={
                 "代號": st.column_config.TextColumn("代號"),
+                "名稱": st.column_config.TextColumn("名稱"),
                 "現價": st.column_config.NumberColumn("現價", format="%.2f"),
                 "成交(張)": st.column_config.NumberColumn("成交(張)", format="%d"),
-                "40日走勢": st.column_config.LineChartColumn("近期走勢"),
-                "符合狀態": st.column_config.TextColumn("狀態/形態"),
+                "近期走勢": st.column_config.LineChartColumn("近期走勢"),
+                "狀態/形態": st.column_config.TextColumn("狀態/形態"),
             },
             hide_index=True,
             use_container_width=True,
@@ -170,7 +177,7 @@ if auto_monitor or submit:
         
         st.divider() 
         
-        # --- 詳細 K 線圖表 ---
+        # --- 詳細圖表 ---
         for item in results:
             with st.container():
                 lbl_html = "".join([f'<span class="tag {"tag-tri" if "三角" in l else "tag-vol" if "爆量" in l else "tag-box"}">{l}</span>' for l in item['labels']])
@@ -186,21 +193,18 @@ if auto_monitor or submit:
                 sh, ih, sl, il = item['lines']
                 fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
                 
-                # K線
                 fig.add_trace(go.Candlestick(x=d.index, open=d['Open'].values.flatten(), high=d['High'].values.flatten(), 
                                             low=d['Low'].values.flatten(), close=d['Close'].values.flatten(),
                     increasing_line_color='#ff4d4d', decreasing_line_color='#00b050', name="K線"), row=1, col=1)
                 
-                # 趨勢線
                 xv = np.arange(30)
                 fig.add_trace(go.Scatter(x=d.index[-30:], y=sh*xv + ih, line=dict(color='red', width=2, dash='dash'), name="壓力"), row=1, col=1)
                 fig.add_trace(go.Scatter(x=d.index[-30:], y=sl*xv + il, line=dict(color='green', width=2, dash='dot'), name="支撐"), row=1, col=1)
 
-                # 成交量
                 colors = ['#ff4d4d' if c >= o else '#00b050' for o, c in zip(d['Open'].values.flatten(), d['Close'].values.flatten())]
                 fig.add_trace(go.Bar(x=d.index, y=d['Volume'].values.flatten(), marker_color=colors, name="成交量"), row=2, col=1)
 
                 fig.update_layout(height=450, template="plotly_white", xaxis_rangeslider_visible=False, showlegend=False, margin=dict(l=10,r=10,t=10,b=10))
                 st.plotly_chart(fig, use_container_width=True, key=f"f_{item['id']}")
     else:
-        st.warning("💡 未找到符合條件的數據，請確認代號是否正確或調整過濾設定。")
+        st.warning("💡 未找到對應數據，請確認代號（如 2330）是否正確。")
