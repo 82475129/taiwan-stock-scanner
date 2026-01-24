@@ -4,225 +4,162 @@ import numpy as np
 import yfinance as yf
 import requests
 import re
-from bs4 import BeautifulSoup
-from scipy.stats import linregress
 import plotly.graph_objects as go
+from scipy.stats import linregress
+from bs4 import BeautifulSoup
 from streamlit_autorefresh import st_autorefresh
 
-# ---------------- [1] 股市資料抓取引擎 ----------------
+# --- [ 1. 數據引擎 ] ---
 @st.cache_data(ttl=3600, show_spinner=False)
 def _engine_core_fetch():
-    """抓取全台股 2000 檔代碼與名稱"""
     codes = {}
     try:
         for s_id in range(1, 34):
             for ex in ["TAI", "TWO"]:
-                r = requests.get(f"https://tw.stock.yahoo.com/class-quote?sectorId={s_id}&exchange={ex}", timeout=5)
+                r = requests.get(f"https://tw.stock.yahoo.com/class-quote?sectorId={s_id}&exchange={ex}", timeout=10)
                 soup = BeautifulSoup(r.text, "html.parser")
                 for li in soup.find_all("li", class_="List(n)"):
                     sid = li.find("span", string=re.compile(r"\d{4}\.(TW|TWO)"))
                     sn = li.find("div", class_="Lh(20px) Fw(600) Fz(16px) Ell")
-                    if sid and sn:
-                        codes[sid.text.strip()] = sn.text.strip()
-    except:
-        pass
+                    if sid and sn: codes[sid.text.strip()] = sn.text.strip()
+    except: pass
     return codes
 
-# ---------------- [2] 形態分析函數 ----------------
-def _analyze_pattern(df):
-    """計算三角收斂與爆量突破"""
-    d = df.tail(30)
-    x = np.arange(len(d))
-    h, l, c, v = d['High'].values.flatten(), d['Low'].values.flatten(), d['Close'].values.flatten(), d['Volume'].values.flatten()
+def _analyze_pattern(df, m1, m2, m3, m4):
+    """形態演算法核心：確保所有勾選的形態都能獨立判定並並存"""
+    try:
+        d = df.tail(30)
+        x = np.arange(len(d))
+        h, l, c, v = d['High'].values.flatten(), d['Low'].values.flatten(), d['Close'].values.flatten(), d['Volume'].values.flatten()
+        
+        # 計算回歸趨勢線
+        sh, ih, _, _, _ = linregress(x, h) # 壓力線 (斜率 sh)
+        sl, il, _, _, _ = linregress(x, l) # 支撐線 (斜率 sl)
 
-    sh, ih, _, _, _ = linregress(x, h)
-    sl, il, _, _, _ = linregress(x, l)
+        found_labels = []
 
-    is_vol = v[-1] > (v[-6:-1].mean() * 1.5)
-    is_tri = sh < -0.01 and sl > 0.01 and c[-1] > (sh * 29 + ih)
+        # 1. 三角系判定 (壓力下傾 sh < -0.002 且 支撐上揚 sl > 0.002)
+        # 調降閾值至 0.002 以提高偵測靈敏度，避免形態消失
+        is_tri = sh < -0.002 and sl > 0.002 
+        if m1 and is_tri:
+            found_labels.append("📐 三角形態")
 
-    labels = []
-    if is_tri: labels.append("📐 三角形態")
-    if is_vol: labels.append("🚀 爆量突破")
+        # 2. 旗箱系判定 (兩線趨近水平平行)
+        is_box = abs(sh) < 0.002 and abs(sl) < 0.002
+        if m2 and is_box:
+            found_labels.append("📦 旗箱矩形")
 
-    return ", ".join(labels) if labels else None, (sh, ih, sl, il), is_tri, is_vol
+        # 3. 反轉系判定 (簡易：價格穿透 30 日趨勢線邊界)
+        is_rev = (c[-1] < (sl * 29 + il)) or (c[-1] > (sh * 29 + ih))
+        if m3 and is_rev:
+            found_labels.append("🔄 反轉預警")
 
-# ---------------- [3] 介面樣式 ----------------
+        # 4. 爆量突破判定 (今日量 > 近 5 日均量 1.1 倍)
+        is_vol = v[-1] > (v[-6:-1].mean() * 1.1)
+        if m4 and is_vol:
+            found_labels.append("🚀 爆量突破")
+        
+        return (", ".join(found_labels) if found_labels else None, (sh, ih, sl, il))
+    except:
+        return None, (0,0,0,0)
+
+# --- [ 2. 視覺介面樣式 ] ---
 st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
 st.markdown("""
-<style>
-.stApp { background: #f0f2f6; }
-section[data-testid="stSidebar"] { background-color: #f8f9fa !important; border-right: 1px solid #e9ecef; }
-.monitor-on { background-color: #d4edda; color: #155724; padding: 15px; border-radius: 8px; text-align: center; font-weight: bold; margin-bottom: 20px; border: 1px solid #c3e6cb; }
-.stock-card { background: white; padding: 20px; border-radius: 10px; border: 1px solid #dee2e6; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.05); }
-.tag-found { background-color: #ff4b4b; color: white; padding: 2px 10px; border-radius: 15px; font-size: 12px; font-weight: bold; }
-</style>
-""", unsafe_allow_html=True)
+    <style>
+    .stApp { background: #f0f2f6; }
+    section[data-testid="stSidebar"] { background-color: #f8f9fa !important; border-right: 1px solid #e9ecef; }
+    .monitor-on { background-color: #d4edda; color: #155724; padding: 15px; border-radius: 8px; text-align: center; font-weight: bold; margin-bottom: 20px; border: 1px solid #c3e6cb; }
+    .stock-card { background: white; padding: 20px; border-radius: 12px; border: 1px solid #dee2e6; margin-bottom: 20px; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+    .tag-found { background-color: #ff4b4b; color: white; padding: 3px 12px; border-radius: 15px; font-size: 13px; font-weight: bold; }
+    </style>
+    """, unsafe_allow_html=True)
 
-# ---------------- [4] 側邊決策中心 ----------------
+# --- [ 3. 側邊決策中心 - 完整介面 ] ---
 with st.sidebar:
     st.markdown("## 🎯 決策中心")
-    st.write("### 📡 自動監控狀態")
-
-    # 顯示條件
-    auto_tri = st.checkbox("📐 只顯示三角形態（不管有沒有爆量）", value=True)
-    auto_vol = st.checkbox("🚀 只顯示爆量突破（不管有沒有三角）", value=True)
-    auto_both = st.checkbox("🔺🚀 同時滿足三角 + 爆量才顯示", value=False)
-    auto_any = st.checkbox("📐 或 🚀 只要有任一就顯示（OR）", value=False)
     auto_monitor = st.toggle("開啟自動監控", value=True)
-
     if auto_monitor:
-        selected_modes = []
-        if auto_tri: selected_modes.append("📐 三角形態")
-        if auto_vol: selected_modes.append("🚀 爆量突破")
-        if auto_both: selected_modes.append("🔺🚀 三角+爆量")
-        if auto_any: selected_modes.append("📐 或 🚀 任一")
-        mode_text = "<br>顯示條件：" + "　＋　".join(selected_modes) if selected_modes else "未選擇條件"
-        st.markdown(f'<div class="monitor-on">自動監控已啟動<br>{mode_text}</div>', unsafe_allow_html=True)
-        st_autorefresh(interval=300000, key="auto_pilot")  # 5分鐘刷新
+        st.markdown('<div class="monitor-on">📡 數據自動掃描中</div>', unsafe_allow_html=True)
+        st_autorefresh(interval=600000, key="auto_pilot")
 
-    # 手動掃描
     with st.form("manual_scan_form"):
-        st.write("### 🔍 個股快查")
+        st.write("### 🔍 標的快查")
         input_sid = st.text_input("輸入股票代號", placeholder="例如: 2330")
         pop_sel = st.multiselect("熱門觀察清單", ["2330 台積電", "2317 鴻海", "2603 長榮", "2454 聯發科"])
+
         st.divider()
-        st.write("### 🧪 形態偵測設定（手動掃描用）")
-        m1 = st.checkbox("三角系", value=True)
-        m2 = st.checkbox("旗箱系", value=False)
-        m3 = st.checkbox("反轉系", value=False)
+        st.write("### 🧪 形態偵測設定")
+        m1 = st.checkbox("偵測三角系 (對稱/收斂)", value=True)
+        m2 = st.checkbox("偵測旗箱系", value=True)
+        m3 = st.checkbox("偵測反轉系", value=False)
+        m4 = st.checkbox("偵測爆量突破", value=True)
+
+        st.divider()
         st.write("### ⚙️ 進階篩選器")
         scan_limit = st.slider("掃描標的數", 10, 2000, 2000)
-        min_v = st.number_input("最低成交量 (張)", value=1000)
-        ma_on = st.toggle("多頭排列 (站上 20MA)", value=True)
+        min_v = st.number_input("最低成交量 (張)", value=500)
+        ma_on = st.toggle("站上 20MA (多頭排列)", value=True)
+
         manual_btn = st.form_submit_button("🚀 開始深度掃描", use_container_width=True, type="primary")
 
     if st.button("🔄 重新整理資料庫", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
-# ---------------- [5] 主畫面 ----------------
-st.markdown("## 📈 台股 Pro-X 形態大師")
-st.markdown('<div style="background-color: #d1e7ff; color: #004085; padding: 12px; border-radius: 5px; margin-bottom: 20px;">💡 <b>操作說明：</b>自動監控每5分鐘巡航一次，可自由選擇要顯示哪種形態結果；手動掃描請點下方按鈕。</div>', unsafe_allow_html=True)
-
-run_scan = auto_monitor or manual_btn or input_sid or pop_sel
-
-if run_scan:
-    with st.status(f"🔍 {'全市場巡航中' if auto_monitor else '手動深度分析中'}...", expanded=True) as status:
+# --- [ 4. 核心執行邏輯 ] ---
+if auto_monitor or manual_btn:
+    with st.status("🔍 正在核對全市場形態數據...", expanded=True) as status:
         results = []
         market_data = _engine_core_fetch()
-        manual_targets = [f"{input_sid}.TW"] if input_sid else []
-        for p in pop_sel:
-            manual_targets.append(f"{p.split(' ')[0]}.TW")
+        manual_targets = [f"{input_sid.strip()}.TW"] if input_sid else []
+        for p in pop_sel: manual_targets.append(f"{p.split(' ')[0]}.TW")
 
         targets = list(market_data.items())[:scan_limit]
 
         for i, (sid, sname) in enumerate(targets):
-            status.update(label=f"正在分析標的: {sid} ({i+1}/{len(targets)})")
+            status.update(label=f"核對中: {sid} {sname}")
             try:
                 is_manual = sid in manual_targets
-                df = yf.download(sid, period="60d", progress=False)
+                df = yf.download(sid, period="60d", progress=False, timeout=10)
                 if df.empty or len(df) < 30: continue
 
-                vol = int(df['Volume'].iloc[-1] / 1000)
+                last_price = float(df['Close'].iloc[-1].values[0])
+                last_vol = int(df['Volume'].iloc[-1].values[0] / 1000)
+                
                 if not is_manual:
-                    if vol < min_v: continue
-                    if ma_on and df['Close'].iloc[-1] < df['Close'].rolling(20).mean().iloc[-1]: continue
+                    if last_vol < min_v: continue
+                    ma20 = df['Close'].rolling(20).mean().iloc[-1].values[0]
+                    if ma_on and last_price < ma20: continue
 
-                res_label, lines, has_tri, has_vol = _analyze_pattern(df)
-
-                show_this = False
-                if auto_monitor:
-                    if auto_tri and has_tri: show_this = True
-                    if auto_vol and has_vol: show_this = True
-                    if auto_both and has_tri and has_vol: show_this = True
-                    if auto_any and (has_tri or has_vol): show_this = True
-                else:
-                    show_this = bool(res_label) or is_manual
-
-                if show_this:
-                    display_label = res_label or "觀察標的"
+                # 傳入所有 Checkbox 狀態進行多重判定
+                res_label, lines = _analyze_pattern(df, m1, m2, m3, m4)
+                
+                if res_label or is_manual:
                     results.append({
-                        "id": sid,
-                        "name": sname,
-                        "df": df.tail(30),
-                        "lines": lines,
-                        "res": display_label,
-                        "price": df['Close'].iloc[-1],
-                        "vol": vol
+                        "id": sid, "name": sname, "df": df.tail(30), "lines": lines, 
+                        "res": res_label or "自選觀察", "price": last_price, "vol": last_vol
                     })
-            except:
-                continue
-        status.update(label="✅ 本次掃描任務完成", state="complete", expanded=False)
+            except: continue
+        status.update(label="✅ 分析完成", state="complete")
 
-    # ---------------- [6] 結果可視化 (超漂亮趨勢圖) ----------------
+    # --- [ 5. 結果顯示與繪圖 ] ---
     if results:
+        
         cols = st.columns(2)
         for idx, item in enumerate(results):
             with cols[idx % 2]:
-                st.markdown(
-                    f'<div class="stock-card"><div style="display:flex; justify-content:space-between;"><b>{item["id"]} {item["name"]}</b> <span class="tag-found">{item["res"]}</span></div>現價：{item["price"]:.2f} | 成交：{item["vol"]}張</div>',
-                    unsafe_allow_html=True
-                )
-
+                st.markdown(f'<div class="stock-card"><b>{item["id"]} {item["name"]}</b> <span class="tag-found">{item["res"]}</span><br>現價：{item["price"]:.2f} | 成交：{item["vol"]}張</div>', unsafe_allow_html=True)
+                
+                fig = go.Figure(data=[go.Candlestick(x=item['df'].index, open=item['df']['Open'], high=item['df']['High'], low=item['df']['Low'], close=item['df']['Close'])])
+                
                 d, (sh, ih, sl, il) = item['df'], item['lines']
                 xv = np.arange(len(d))
-                fig = go.Figure()
-
-                # K線
-                fig.add_trace(go.Candlestick(
-                    x=d.index,
-                    open=d['Open'],
-                    high=d['High'],
-                    low=d['Low'],
-                    close=d['Close'],
-                    increasing_line_color='#00b894',
-                    decreasing_line_color='#d63031',
-                    increasing_fillcolor='rgba(0,184,148,0.3)',
-                    decreasing_fillcolor='rgba(214,48,49,0.3)',
-                    name='K線'
-                ))
-
-                # 壓力線
-                fig.add_trace(go.Scatter(
-                    x=d.index,
-                    y=sh*xv + ih,
-                    mode='lines',
-                    line=dict(color='#0984e3', width=2, dash='dash'),
-                    name='壓力線'
-                ))
-
-                # 支撐線
-                fig.add_trace(go.Scatter(
-                    x=d.index,
-                    y=sl*xv + il,
-                    mode='lines',
-                    line=dict(color='#fdcb6e', width=2, dash='dash'),
-                    name='支撐線'
-                ))
-
-                # 信號標註
-                if item['res']:
-                    fig.add_trace(go.Scatter(
-                        x=[d.index[-1]],
-                        y=[d['Close'].iloc[-1]],
-                        mode='markers+text',
-                        marker=dict(color='#6c5ce7', size=12, symbol='star'),
-                        text=[item['res']],
-                        textposition='top center',
-                        name='信號點'
-                    ))
-
-                # 美化版面
-                fig.update_layout(
-                    height=360,
-                    template='plotly_dark',
-                    xaxis_title='日期',
-                    yaxis_title='價格 (TWD)',
-                    xaxis_rangeslider_visible=False,
-                    margin=dict(l=5, r=5, t=25, b=5)
-                )
-
+                # 繪製自動計算的趨勢線
+                fig.add_trace(go.Scatter(x=d.index, y=sh * xv + ih, line=dict(color='red', width=2, dash='dot'), name="壓力線"))
+                fig.add_trace(go.Scatter(x=d.index, y=sl * xv + il, line=dict(color='green', width=2, dash='dot'), name="支撐線"))
+                
+                fig.update_layout(height=320, template="plotly_white", xaxis_rangeslider_visible=False, margin=dict(l=0, r=0, t=0, b=0))
                 st.plotly_chart(fig, use_container_width=True, key=f"c_{item['id']}")
     else:
-        st.info("💡 目前未發現符合您選擇顯示條件的標的。")
+        st.info("💡 目前未發現符合勾選形態的標的。")
