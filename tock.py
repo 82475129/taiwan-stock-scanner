@@ -130,7 +130,40 @@ if auto_monitor or submit:
 
     # --- [ 5. 細緻圖表輸出 ] ---
     if results:
+        # --- [ 新增：首頁總覽列表 ] ---
+        st.subheader("📋 形態掃描追蹤清單")
         
+        summary_list = []
+        for item in results:
+            summary_list.append({
+                "代號": item["id"],
+                "名稱": item["name"],
+                "現價": item["price"],
+                "成交(張)": item["vol"],
+                "符合形態": " | ".join(item["labels"]),
+                "40日走勢": item["df"]['Close'].tolist()
+            })
+        
+        df_summary = pd.DataFrame(summary_list)
+        
+        st.data_editor(
+            df_summary,
+            column_config={
+                "代號": st.column_config.TextColumn("代號"),
+                "現價": st.column_config.NumberColumn("現價", format="%.2f"),
+                "成交(張)": st.column_config.NumberColumn("成交(張)", format="%d"),
+                "40日走勢": st.column_config.LineChartColumn("近期走勢"),
+                "符合形態": st.column_config.TextColumn("符合形態"),
+            },
+            hide_index=True,
+            use_container_width=True,
+            disabled=True,
+            key="summary_table"
+        )
+        
+        st.divider() 
+        
+        # 原有的詳細圖表循環
         for item in results:
             with st.container():
                 lbl_html = "".join([f'<span class="tag {"tag-tri" if "三角" in l else "tag-vol" if "爆量" in l else "tag-box"}">{l}</span>' for l in item['labels']])
