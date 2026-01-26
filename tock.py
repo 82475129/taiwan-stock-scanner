@@ -11,34 +11,23 @@ import json
 import os
 
 # ==========================================
-# 0. 狀態鎖定與資料庫載入
+# 0. 核心資料載入與格式化
 # ==========================================
 if "current_mode" not in st.session_state:
     st.session_state.current_mode = "⚡ 今日即時監控 (自動)"
 
-DB_FILE = "taiwan_electronic_stocks.json"
-
 @st.cache_data(ttl=3600)
-def load_full_db():
-    # 預設基礎資料庫
-    base = {
-        "2330.TW": {"name": "台積電", "cat": "半導體"},
-        "2454.TW": {"name": "聯發科", "cat": "IC設計"},
-        "2317.TW": {"name": "鴻海", "cat": "組裝"},
-        "2481.TW": {"name": "強茂", "cat": "分離元件"},
-        "2352.TW": {"name": "佳世達", "cat": "系統整合"},
-        "3034.TW": {"name": "聯詠", "cat": "驅動IC"},
-        "2436.TW": {"name": "偉詮電", "cat": "IC設計"},
-        "2380.TW": {"name": "虹光", "cat": "光學元件"},
-        "2405.TW": {"name": "輔信", "cat": "電腦週邊"},
-        "3014.TW": {"name": "聯陽", "cat": "IC設計"}
-    }
+def load_db():
+    DB_FILE = "taiwan_electronic_stocks.json"
+    # 預設資料庫
+    base = {"2330.TW": "台積電", "2454.TW": "聯發科", "2317.TW": "鴻海", "2481.TW": "強茂", "2352.TW": "佳世達"}
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except:
-            return base
+                data = json.load(f)
+                # ✨ 關鍵修正：自動解析字典格式，避免顯示 {'name': '...'}
+                return {k: (v['name'] if isinstance(v, dict) else v) for k, v in data.items()}
+        except: return base
     return base
 
 @st.cache_data(ttl=300)
@@ -46,194 +35,159 @@ def get_stock_data(sid):
     try:
         df = yf.download(sid, period="45d", progress=False)
         if df.empty: return pd.DataFrame()
-        
-        # 處理 yfinance 新版 MultiIndex 結構
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = df.columns.get_level_values(0)
-        
-        # ✨ 解決 DuplicateError：刪除重複名稱的欄位 (Plotly 必備修正)
-        df = df.loc[:, ~df.columns.duplicated()]
-        
-        # 強制選取必要欄位
-        required = ["Open", "High", "Low", "Close", "Volume"]
-        df = df[required].dropna()
-        return df
-    except:
-        return pd.DataFrame()
+        if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
+        df = df.loc[:, ~df.columns.duplicated()] # 預防 yfinance 重複欄位報錯
+        return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
+    except: return pd.DataFrame()
 
 # ==========================================
-# 1. 形態分析邏輯 (三角收斂、旗箱整理、爆量)
+# 1. 形態演算法 (線性回歸分析)
 # ==========================================
-def analyze_patterns(df, config, days=15):
-    if df is None or df.empty or len(df) < days:
-        return None
-    d = df.tail(days)
-    try:
-        # 確保數據為 1D 陣列
-        h = d["High"].values.flatten().astype(float)
-        l = d["Low"].values.flatten().astype(float)
-        v = d["Volume"].values.flatten().astype(float)
-        x = np.arange(len(h))
-        
-        # 線性回歸計算趨勢斜率
-        sh, ih, *_ = linregress(x, h)
-        sl, il, *_ = linregress(x, l)
-        
-        v_mean = np.mean(v[:-1]) if len(v) >= 2 else np.mean(v)
-        hits = []
-        
-        # 📐 三角收斂判斷
-        if config.get("tri") and sh < -0.003 and sl > 0.003: 
-            hits.append({"text": "📐三角收斂", "class": "badge-tri"})
-        # 📦 旗箱整理判斷
-        if config.get("box") and abs(sh) < 0.03 and abs(sl) < 0.03: 
-            hits.append({"text": "📦旗箱整理", "class": "badge-box"})
-        # 🚀 今日爆量判斷
-        if config.get("vol") and v[-1] > v_mean * 1.3: 
-            hits.append({"text": "🚀今日爆量", "class": "badge-vol"})
-            
-        return {"labels": hits, "lines": (sh, ih, sl, il, x), "vol": int(v[-1] // 1000)}
-    except:
-        return None
+def analyze(df, config):
+    if df.empty or len(df) < 15: return None
+    d = df.tail(15)
+    h, l, v = d["High"].values.flatten(), d["Low"].values.flatten(), d["Volume"].values.flatten()
+    x = np.arange(len(h))
+    sh, ih, *_ = linregress(x, h)
+    sl, il, *_ = linregress(x, l)
+    v_mean = np.mean(v[:-1]) if len(v) > 1 else 1
+    
+    hits = []
+    if config.get("tri") and sh < -0.003 and sl > 0.003: hits.append("📐 三角收斂")
+    if config.get("box") and abs(sh) < 0.03 and abs(sl) < 0.03: hits.append("📦 旗箱整理")
+    if config.get("vol") and v[-1] > v_mean * 1.3: hits.append("🚀 今日爆量")
+    
+    return {"labels": hits, "lines": (sh, ih, sl, il, x), "vol": int(v[-1] // 1000)}
 
 # ==========================================
-# 2. UI 樣式與科技感標題 (結合三合一感覺)
+# 2. 高級 UI 質感設計 (CSS)
 # ==========================================
 st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
 
-# 主畫面標題區塊：科技漸層感 + 動態描述 + 專業符號
 st.markdown("""
-<div style="text-align: center; padding: 25px; background: linear-gradient(135deg, #6c5ce7 0%, #a29bfe 100%); border-radius: 15px; margin-bottom: 25px; color: white; box-shadow: 0 4px 15px rgba(108, 92, 231, 0.2);">
-    <h1 style="margin: 0; font-size: 2.2rem; font-weight: 800; letter-spacing: 1px;">🎯 台股 Pro-X：即時形態 AI 偵測系統</h1>
-    <p style="margin: 10px 0 0 0; opacity: 0.9; font-size: 1.1rem; font-weight: 300;">⚡ 自動秒級掃描 · 📐 核心形態捕捉 · 🚀 成交量異動追蹤</p>
-</div>
 <style>
-.stApp { background-color: #f8f9fa; }
-.stock-card {
-    background: white; padding: 20px; border-radius: 12px;
-    margin-bottom: 12px; border-left: 6px solid #6c5ce7;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.05);
-}
-.card-header { display:flex; justify-content:space-between; align-items:center; }
-.sid-link { font-weight:bold; color:#6c5ce7; text-decoration:none; font-size:1.2rem; }
-.vol-info { color:#636e72; font-size:0.9rem; background:#f1f2f6; padding:4px 10px; border-radius:6px; font-weight: 500;}
-.badge { padding:5px 12px; border-radius:6px; font-size:0.8rem; color:white; margin-right:6px; font-weight:600; display:inline-block; margin-top:5px; }
-.badge-tri { background:#6c5ce7; }
-.badge-box { background:#2d3436; }
-.badge-vol { background:#d63031; }
-.badge-none { background:#b2bec3; }
+    /* 全域字體優化 */
+    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;500;700&display=swap');
+    html, body, [class*="css"] { font-family: 'Noto Sans TC', sans-serif; background-color: #f8f9fa; }
+    
+    /* 標題區塊 */
+    .title-container { text-align: center; padding: 30px 0; background: #ffffff; border-bottom: 1px solid #e9ecef; margin-bottom: 30px; }
+    .main-title { font-size: 28px; font-weight: 700; color: #212529; margin-bottom: 5px; letter-spacing: 1px; }
+    .sub-title { font-size: 13px; color: #adb5bd; font-weight: 300; letter-spacing: 3px; text-transform: uppercase; }
+    
+    /* 極簡卡片 */
+    .stock-card { 
+        background: white; padding: 20px; border-radius: 10px; 
+        border: 1px solid #edf2f7; margin-bottom: 15px; 
+        transition: all 0.2s ease;
+    }
+    .stock-card:hover { border-color: #cbd5e0; box-shadow: 0 4px 12px rgba(0,0,0,0.03); }
+    .card-id { font-size: 19px; font-weight: 700; color: #4a5568; text-decoration: none; }
+    .card-id:hover { color: #667eea; }
+    .card-vol { float: right; font-size: 14px; color: #a0aec0; font-weight: 500; background: #f7fafc; padding: 2px 8px; border-radius: 4px; }
+    
+    /* 標籤樣式 */
+    .badge { 
+        display: inline-block; padding: 4px 10px; border-radius: 5px; 
+        font-size: 12px; font-weight: 600; margin-right: 8px; margin-top: 12px; 
+        color: white; 
+    }
+    .bg-pattern { background: #667eea; } /* 科技藍 */
+    .bg-vol { background: #f56565; }    /* 警示紅 */
+    .bg-none { background: #edf2f7; color: #a0aec0; }
 </style>
 """, unsafe_allow_html=True)
 
+# 渲染標題
+st.markdown('<div class="title-container"><div class="main-title">🎯 台股 Pro-X 形態大師</div><div class="sub-title">Advanced Technical Analysis System</div></div>', unsafe_allow_html=True)
+
 # ==========================================
-# 3. 側邊欄控制 (左側介面完全保留)
+# 3. 側邊欄控制 (左側介面絕對不動)
 # ==========================================
-db = load_full_db()
+db = load_db()
 modes = ["⚡ 今日即時監控 (自動)", "⏳ 歷史形態搜尋 (手動)", "🌐 顯示所有股票連結"]
 
 with st.sidebar:
-    st.title("🎯 形態大師控制台")
-    mode = st.radio("選擇功能模式", modes, index=modes.index(st.session_state.current_mode))
+    st.title("Settings")
+    mode = st.radio("功能模式", modes, index=modes.index(st.session_state.current_mode))
     st.session_state.current_mode = mode
     st.divider()
-
-    if mode == "⚡ 今日即時監控 (自動)":
+    
+    if "自動" in mode:
         st_autorefresh(interval=300000, key="auto")
-        current_config = {
-            "tri": st.checkbox("📐 三角收斂", True),
-            "box": st.checkbox("📦 旗箱整理", True),
-            "vol": st.checkbox("🚀 今日爆量", True)
-        }
-        t_min_v = st.number_input("最低量 (張)", value=300)
-        run_now = True
-    elif mode == "⏳ 歷史形態搜尋 (手動)":
-        h_sid = st.text_input("代號 (輸入即強制顯示圖表)", placeholder="例如: 2330")
-        current_config = {
-            "tri": st.checkbox("📐 三角收斂", True),
-            "box": st.checkbox("📦 旗箱整理", True),
-            "vol": st.checkbox("🚀 今日爆量", True)
-        }
-        h_min_v = st.number_input("最低量 (張)", value=100)
-        run_now = st.button("🚀 開始掃描", use_container_width=True)
-    else:
-        run_now = False
+        conf = {"tri": st.checkbox("📐 三角收斂", True), "box": st.checkbox("📦 旗箱整理", True), "vol": st.checkbox("🚀 今日爆量", True)}
+        min_v = st.number_input("最低成交量 (張)", value=300)
+        run = True
+    elif "手動" in mode:
+        sid_in = st.text_input("輸入代號 (如 2330)")
+        conf = {"tri": st.checkbox("📐 三角收斂", True), "box": st.checkbox("📦 旗箱整理", True), "vol": st.checkbox("🚀 今日爆量", True)}
+        min_v = 0
+        run = st.button("🚀 開始分析", use_container_width=True)
+    else: run = False
 
 # ==========================================
-# 4. 主畫面顯示邏輯
+# 4. 邏輯與介面渲染
 # ==========================================
 if mode == "🌐 顯示所有股票連結":
-    for sid, info in db.items():
-        # ✨ 名稱處理邏輯修正：解決字典亂碼問題
-        name = info['name'] if isinstance(info, dict) else info
-        st.markdown(f'· <a class="sid-link" target="_blank" href="https://tw.stock.yahoo.com/quote/{sid.split(".")[0]}">{sid.split(".")[0]} {name}</a>', unsafe_allow_html=True)
+    st.info("💡 點擊下方連結可直接跳轉至 Yahoo 股市頁面")
+    cols = st.columns(3)
+    for i, (sid, name) in enumerate(db.items()):
+        cols[i % 3].markdown(f"· [{sid.split('.')[0]} {name}](https://tw.stock.yahoo.com/quote/{sid.split('.')[0]})")
 
-elif run_now:
-    is_specific = (mode == "⏳ 歷史形態搜尋 (手動)" and h_sid.strip() != "")
-    
-    if is_specific:
-        sid_tw, sid_two = f"{h_sid.upper()}.TW", f"{h_sid.upper()}.TWO"
-        def get_nm(s):
-            info = db.get(s)
-            if not info: return None
-            return info['name'] if isinstance(info, dict) else info
-        
-        name_found = get_nm(sid_tw) or get_nm(sid_two) or "個股"
-        targets = [(sid_tw, name_found), (sid_two, name_found)]
+elif run:
+    is_manual = ("手動" in mode and sid_in.strip() != "")
+    if is_manual:
+        # 手動輸入時檢查兩大交易所
+        targets = [(f"{sid_in.upper()}.TW", db.get(f"{sid_in.upper()}.TW", "搜尋標的")), 
+                   (f"{sid_in.upper()}.TWO", db.get(f"{sid_in.upper()}.TWO", "搜尋標的"))]
     else:
-        # 自動監控模式
-        targets = []
-        for sid, info in db.items():
-            name = info['name'] if isinstance(info, dict) else info
-            targets.append((sid, name))
+        targets = list(db.items())
     
-    mv_limit = t_min_v if mode.startswith("⚡") else h_min_v
     results = []
-
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as exe:
-        future_to_sid = {exe.submit(get_stock_data, sid): (sid, name) for sid, name in targets}
-        for f in concurrent.futures.as_completed(future_to_sid):
-            sid, name = future_to_sid[f]
+        futures = {exe.submit(get_stock_data, s): (s, n) for s, n in targets}
+        for f in concurrent.futures.as_completed(futures):
+            s, n = futures[f]
             df = f.result()
-            res = analyze_patterns(df, current_config)
-            if res and (is_specific or (res["labels"] and res["vol"] >= mv_limit)):
-                res.update({"sid": sid, "name": name, "df": df})
+            res = analyze(df, conf)
+            if res and (is_manual or (res["labels"] and res["vol"] >= min_v)):
+                res.update({"sid": s, "name": n, "df": df})
                 results.append(res)
 
-    if not results:
-        st.info("🔍 目前沒有符合條件的股票，或代號輸入錯誤。")
-    
     # 排序：標籤越多排越前面
     results.sort(key=lambda x: len(x["labels"]), reverse=True)
 
-    for item in results:
-        clean = item["sid"].split(".")[0]
-        badges = "".join(f'<span class="badge {b["class"]}">{b["text"]}</span>' for b in item["labels"]) if item["labels"] else '<span class="badge badge-none">🔘 一般走勢</span>'
+    if not results:
+        st.info("🔍 目前沒有符合篩選條件的標的")
 
-        # ✨ 渲染卡片：移除股價，顯示名稱
+    for item in results:
+        clean_sid = item['sid'].split('.')[0]
+        # 卡片渲染
+        badge_html = ' '.join([f'<span class="badge {"bg-vol" if "爆量" in t else "bg-pattern"}">{t}</span>' for t in item['labels']])
+        if not badge_html: badge_html = '<span class="badge bg-none">🔘 一般走勢</span>'
+        
         st.markdown(f"""
         <div class="stock-card">
-            <div class="card-header">
-                <a class="sid-link" target="_blank" href="https://tw.stock.yahoo.com/quote/{clean}">🔗 {clean} {item["name"]}</a>
-                <span class="vol-info">成交 {item["vol"]} 張</span>
-            </div>
-            <div style="margin-top:10px;">{badges}</div>
+            <span class="card-vol">成交量 {item['vol']} 張</span>
+            <a class="card-id" target="_blank" href="https://tw.stock.yahoo.com/quote/{clean_sid}">🔗 {clean_sid} {item['name']}</a><br>
+            {badge_html}
         </div>
         """, unsafe_allow_html=True)
-
-        with st.expander("📈 展開形態分析圖表"):
+        
+        with st.expander("📈 展開技術形態圖表"):
             d = item["df"].tail(30)
             sh, ih, sl, il, x_reg = item["lines"]
-            
             fig = make_subplots(rows=1, cols=1)
             fig.add_candlestick(x=d.index, open=d["Open"], high=d["High"], low=d["Low"], close=d["Close"], name="K線")
-            
-            # 趨勢線渲染
+            # 趨勢參考線
             p = d.tail(15)
-            fig.add_scatter(x=p.index, y=sh * x_reg + ih, line=dict(dash="dash", color="#d63031"), name="壓力線")
-            fig.add_scatter(x=p.index, y=sl * x_reg + il, line=dict(dash="dot", color="#6c5ce7"), name="支撐線")
-            
-            fig.update_layout(height=400, xaxis_rangeslider_visible=False, showlegend=False, margin=dict(t=0, b=0, l=0, r=0))
-            # ✨ 修正：使用唯一 key 避免元件衝突
-            st.plotly_chart(fig, use_container_width=True, key=f"v_final_{item['sid']}")
+            fig.add_scatter(x=p.index, y=sh * x_reg + ih, line=dict(dash="dash", color="#f56565", width=1.5), name="阻力")
+            fig.add_scatter(x=p.index, y=sl * x_reg + il, line=dict(dash="dash", color="#667eea", width=1.5), name="支撐")
+            fig.update_layout(
+                height=400, xaxis_rangeslider_visible=False, showlegend=False,
+                margin=dict(t=10, b=10, l=10, r=10),
+                paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(248, 249, 250, 0.5)"
+            )
+            st.plotly_chart(fig, use_container_width=True, key=f"f_{item['sid']}")
 else:
-    st.info("👈 請由左側控制台開始掃描")
+    st.info("👈 請選擇操作模式並點擊掃描")
