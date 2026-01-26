@@ -3,8 +3,8 @@ pandas
 numpy
 yfinance
 requests
+beautifulsoup4
 plotly
 scipy
-beautifulsoup4
 streamlit-autorefresh
-
+tabulate   # 為了 to_markdown() 不報錯
