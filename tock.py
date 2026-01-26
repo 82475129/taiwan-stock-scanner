@@ -37,7 +37,7 @@ def get_stock_data(sid):
     except: return pd.DataFrame()
 
 # ==========================================
-# 1. 形態演算法 (三角、旗箱、爆量)
+# 1. 形態演算法 (顏色與邏輯)
 # ==========================================
 def analyze_patterns(df, config, days=15):
     if df is None or df.empty or len(df) < days: return None
@@ -48,19 +48,20 @@ def analyze_patterns(df, config, days=15):
         v = d['Volume'].values.flatten().astype(float)
         x = np.arange(len(h))
         
-        # 線性回歸計算斜率
         sh, ih, _, _, _ = linregress(x, h) 
         sl, il, _, _, _ = linregress(x, l) 
-        
         v_mean = v[-6:-1].mean() if len(v)>5 else v.mean()
         
         hits = []
-        # 三角收斂邏輯
-        if config.get('tri') and (sh < -0.003 and sl > 0.003): hits.append("📐三角收斂")
-        # 旗箱整理邏輯
-        if config.get('box') and (abs(sh) < 0.03 and abs(sl) < 0.03): hits.append("📦旗箱整理")
-        # 今日爆量邏輯
-        if config.get('vol') and (v[-1] > v_mean * 1.3): hits.append("🚀今日爆量")
+        # 三角收斂 (紫色)
+        if config.get('tri') and (sh < -0.003 and sl > 0.003): 
+            hits.append({"text": "📐三角收斂", "class": "badge-tri"})
+        # 旗箱整理 (灰色)
+        if config.get('box') and (abs(sh) < 0.03 and abs(sl) < 0.03): 
+            hits.append({"text": "📦旗箱整理", "class": "badge-box"})
+        # 今日爆量 (紅色)
+        if config.get('vol') and (v[-1] > v_mean * 1.3): 
+            hits.append({"text": "🚀今日爆量", "class": "badge-vol"})
         
         if hits:
             return {
@@ -73,7 +74,7 @@ def analyze_patterns(df, config, days=15):
     return None
 
 # ==========================================
-# 2. 手機版專屬樣式 (解決排版擠壓)
+# 2. 手機版專屬樣式
 # ==========================================
 st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
 st.markdown("""
@@ -89,37 +90,42 @@ st.markdown("""
     .s-name { font-size: 1rem; color: #333; font-weight: 500; }
     .price { color: #d63031; font-weight: 800; font-size: 1.3rem; }
     .badge {
-        background: #efecff; color: #6c5ce7; padding: 3px 10px; 
-        border-radius: 6px; font-size: 0.75rem; font-weight: bold; 
-        border: 1px solid #6c5ce7; margin-right: 5px; margin-top: 5px;
+        padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; 
+        font-weight: bold; margin-right: 5px; margin-top: 5px; color: white;
     }
+    .badge-tri { background-color: #6c5ce7; border: 1px solid #6c5ce7; }
+    .badge-box { background-color: #2d3436; border: 1px solid #2d3436; }
+    .badge-vol { background-color: #d63031; border: 1px solid #d63031; }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. 側邊欄：完整功能分類
+# 3. 側邊欄控制台 (新增今日監控勾選功能)
 # ==========================================
 db = load_full_db()
 
 with st.sidebar:
     st.title("🎯 形態大師控制台")
-    # 模式選擇
     mode = st.radio("功能模式", ["⚡ 今日即時監控 (自動)", "⏳ 歷史形態搜尋 (手動)"], index=0)
     st.divider()
     
     if "今日" in mode:
         st_autorefresh(interval=300000, key="auto_ref_today")
-        st.subheader("今日監控設定")
-        t_min_v = st.number_input("最低成交量 (張)", value=300)
-        # 預設監控今日的三角與爆量
-        current_config = {'tri': True, 'box': False, 'vol': True}
+        st.subheader("📡 今日監控設定")
+        # --- 新增的勾選欄 ---
+        t_tri = st.checkbox("📐 三角收斂 (紫色)", value=True, key="t_tri")
+        t_box = st.checkbox("📦 旗箱整理 (灰色)", value=True, key="t_box")
+        t_vol = st.checkbox("🚀 今日爆量 (紅色)", value=True, key="t_vol")
+        # ------------------
+        t_min_v = st.number_input("今日最低量 (張)", value=300)
+        current_config = {'tri': t_tri, 'box': t_box, 'vol': t_vol}
         run_now = True
     else:
-        st.subheader("歷史形態篩選")
-        h_sid = st.text_input("輸入代號 (選填優先)", placeholder="例如: 2330")
-        h_tri = st.checkbox("搜尋「三角收斂」", value=True)
-        h_box = st.checkbox("搜尋「旗箱整理」", value=True)
-        h_vol = st.checkbox("搜尋「今日爆量」", value=True)
+        st.subheader("⏳ 歷史條件搜尋")
+        h_sid = st.text_input("個股代號 (選填)", placeholder="2330")
+        h_tri = st.checkbox("📐 三角收斂 (紫色)", value=True, key="h_tri")
+        h_box = st.checkbox("📦 旗箱整理 (灰色)", value=True, key="h_box")
+        h_vol = st.checkbox("🚀 今日爆量 (紅色)", value=True, key="h_vol")
         h_min_v = st.number_input("搜尋最低量 (張)", value=100)
         current_config = {'tri': h_tri, 'box': h_box, 'vol': h_vol}
         run_now = st.button("🚀 開始掃描資料庫", type="primary", use_container_width=True)
@@ -128,13 +134,12 @@ with st.sidebar:
 # 4. 分析與卡片渲染
 # ==========================================
 if run_now:
-    st.subheader(f"🔍 {mode} 結果")
+    st.subheader(f"🔍 {mode}")
     
-    # 確定名單範圍
     if "手動" in mode and h_sid:
         targets = [(f"{h_sid.upper()}.TW", "手動"), (f"{h_sid.upper()}.TWO", "手動")]
     else:
-        targets = list(db.items())[:150] # 掃描資料庫前 150 檔
+        targets = list(db.items())[:150]
 
     mv_limit = t_min_v if "今日" in mode else h_min_v
     scan_results = []
@@ -154,9 +159,8 @@ if run_now:
 
     for item in scan_results:
         clean_id = item['sid'].split('.')[0]
-        badges_html = "".join([f'<span class="badge">{l}</span>' for l in item['labels']])
+        badges_html = "".join([f'<span class="badge {l["class"]}">{l["text"]}</span>' for l in item['labels']])
         
-        # 顯示卡片 (取代 Table)
         st.markdown(f"""
             <div class="stock-card">
                 <div class="card-row">
@@ -171,17 +175,16 @@ if run_now:
             </div>
         """, unsafe_allow_html=True)
         
-        # 展開 K 線分析
-        with st.expander("📈 展開分析圖表"):
+        with st.expander("📈 查看趨勢線分析"):
             d_tail = item['df'].tail(30)
             sh, ih, sl, il, x_range = item['lines']
             fig = make_subplots(rows=1, cols=1)
             fig.add_trace(go.Candlestick(x=d_tail.index, open=d_tail['Open'], high=d_tail['High'], low=d_tail['Low'], close=d_tail['Close'], name="K"))
             
-            # 趨勢線繪製
+            # 趨勢線
             plot_d = d_tail.tail(15)
-            fig.add_trace(go.Scatter(x=plot_d.index, y=sh*x_range+ih, line=dict(color='red', width=3, dash='dash')))
-            fig.add_trace(go.Scatter(x=plot_d.index, y=sl*x_range+il, line=dict(color='green', width=3, dash='dot')))
+            fig.add_trace(go.Scatter(x=plot_d.index, y=sh*x_range+ih, line=dict(color='#ff4757', width=3, dash='dash')))
+            fig.add_trace(go.Scatter(x=plot_d.index, y=sl*x_range+il, line=dict(color='#2ed573', width=3, dash='dot')))
             
             fig.update_layout(height=400, margin=dict(l=5,r=5,t=5,b=5), xaxis_rangeslider_visible=False, showlegend=False, template="plotly_white")
             st.plotly_chart(fig, use_container_width=True, key=f"f_{item['sid']}")
