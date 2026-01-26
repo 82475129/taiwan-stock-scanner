@@ -20,7 +20,6 @@ DB_FILE = "taiwan_electronic_stocks.json"
 
 @st.cache_data(ttl=3600)
 def load_full_db():
-    # 預設基礎資料庫，若無外部 JSON 則使用此表
     base = {
         "2330.TW": {"name": "台積電", "cat": "電子"},
         "2454.TW": {"name": "聯發科", "cat": "電子"},
@@ -41,14 +40,14 @@ def get_stock_data(sid):
         df = yf.download(sid, period="45d", progress=False)
         if df.empty: return pd.DataFrame()
         
-        # 1. 處理 yfinance 的 MultiIndex 欄位
+        # 處理 yfinance 的 MultiIndex 欄位
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         
-        # 2. ✨ 徹底解決 DuplicateError：刪除重複名稱的欄位
+        # ✨ 解決 DuplicateError：刪除重複名稱的欄位 (Plotly 必備修正)
         df = df.loc[:, ~df.columns.duplicated()]
         
-        # 3. 強制選取必要欄位並確保名稱唯一
+        # 強制選取必要欄位
         required = ["Open", "High", "Low", "Close", "Volume"]
         df = df[required].dropna()
         return df
@@ -64,13 +63,11 @@ def analyze_patterns(df, config, days=15):
     
     d = df.tail(days)
     try:
-        # 確保提取為 1D 陣列，並確保為 float 型態
         h = d["High"].values.flatten().astype(float)
         l = d["Low"].values.flatten().astype(float)
         v = d["Volume"].values.flatten().astype(float)
         x = np.arange(len(h))
         
-        # 線性回歸計算 (計算壓力線與支撐線斜率)
         sh, ih, *_ = linregress(x, h)
         sl, il, *_ = linregress(x, l)
     except:
@@ -79,15 +76,10 @@ def analyze_patterns(df, config, days=15):
     v_mean = np.mean(v[:-1]) if len(v) >= 2 else np.mean(v)
     hits = []
     
-    # 📐 三角收斂：高點下移，低點上移
     if config.get("tri") and sh < -0.003 and sl > 0.003:
         hits.append({"text": "📐三角收斂", "class": "badge-tri"})
-    
-    # 📦 旗箱整理：上下軌道趨於水平
     if config.get("box") and abs(sh) < 0.03 and abs(sl) < 0.03:
         hits.append({"text": "📦旗箱整理", "class": "badge-box"})
-    
-    # 🚀 今日爆量：今日量 > 均量 1.3 倍
     if config.get("vol") and v[-1] > v_mean * 1.3:
         hits.append({"text": "🚀今日爆量", "class": "badge-vol"})
 
@@ -98,10 +90,16 @@ def analyze_patterns(df, config, days=15):
     }
 
 # ==========================================
-# 2. UI 樣式設定
+# 2. UI 樣式與標題設定
 # ==========================================
 st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
+
+# 結合三種感官的標題 (科技、動態、專業)
 st.markdown("""
+<div style="text-align: center; padding: 10px; border-bottom: 2px solid #6c5ce7; margin-bottom: 20px;">
+    <h1 style="color: #2d3436; margin-bottom: 0;">🎯 台股 Pro-X：即時形態 AI 偵測系統</h1>
+    <p style="color: #636e72; font-size: 1.1rem; margin-top: 5px;">⚡ 自動掃描 · 📐 形態捕捉 · 🚀 爆量追蹤</p>
+</div>
 <style>
 .stApp { background-color: #f4f7f6; }
 .stock-card {
@@ -121,7 +119,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. 側邊欄控制 (介面嚴格保留不變)
+# 3. 側邊欄控制 (左側介面嚴格保留)
 # ==========================================
 db = load_full_db()
 modes = ["⚡ 今日即時監控 (自動)", "⏳ 歷史形態搜尋 (手動)", "🌐 顯示所有股票連結"]
@@ -165,20 +163,19 @@ if mode == "🌐 顯示所有股票連結":
 elif run_now:
     is_specific = (mode == "⏳ 歷史形態搜尋 (手動)" and h_sid.strip() != "")
     
-    # ✨ 名稱抓取邏輯強化：手動搜尋時優先從 DB 比對正確名稱
     if is_specific:
         sid_tw = f"{h_sid.upper()}.TW"
         sid_two = f"{h_sid.upper()}.TWO"
         
-        def get_name(s):
+        # 嘗試從 db 找出對應名稱，確保手動搜尋也能顯示中文名
+        def find_name(s):
             info = db.get(s)
             if not info: return None
             return info['name'] if isinstance(info, dict) else info
 
-        name_found = get_name(sid_tw) or get_name(sid_two) or "個股"
+        name_found = find_name(sid_tw) or find_name(sid_two) or "個股"
         targets = [(sid_tw, name_found), (sid_two, name_found)]
     else:
-        # 自動監控模式
         targets = []
         for sid, info in db.items():
             name = info['name'] if isinstance(info, dict) else info
@@ -200,27 +197,26 @@ elif run_now:
                 results.append(res)
 
     if not results:
-        st.info("🔍 尚未發現符合條件的股票")
+        st.info("🔍 目前沒有符合條件的股票，或代號輸入錯誤。")
 
-    # 排序：有標籤的排前面
+    # 排序：有爆量或收斂的排前面
     results.sort(key=lambda x: len(x["labels"]), reverse=True)
 
     for item in results:
         clean = item["sid"].split(".")[0]
         badges = "".join(f'<span class="badge {b["class"]}">{b["text"]}</span>' for b in item["labels"]) if item["labels"] else '<span class="badge badge-none">🔘 一般走勢</span>'
 
-        # ✨ 卡片介面：顯示代號+名稱，成交量，移除股價
         st.markdown(f"""
         <div class="stock-card">
             <div class="card-header">
                 <a class="sid-link" target="_blank" href="https://tw.stock.yahoo.com/quote/{clean}">🔗 {clean} {item["name"]}</a>
-                <span class="vol-info">成交 {item["vol"]} 張</span>
+                <span class="vol-info">成交量 {item["vol"]} 張</span>
             </div>
             <div>{badges}</div>
         </div>
         """, unsafe_allow_html=True)
 
-        with st.expander("📈 展開形態圖表"):
+        with st.expander("📈 展開形態分析圖表"):
             d = item["df"].tail(30)
             sh, ih, sl, il, x_reg = item["lines"]
             
@@ -232,7 +228,7 @@ elif run_now:
             fig.add_scatter(x=p.index, y=sl * x_reg + il, line=dict(dash="dot", color="#6c5ce7"), name="支撐線")
             
             fig.update_layout(height=400, xaxis_rangeslider_visible=False, showlegend=False, margin=dict(t=0, b=0, l=0, r=0))
-            # ✨ 關鍵修正：加上 unique key 解決重複元件 ID 錯誤
-            st.plotly_chart(fig, use_container_width=True, key=f"plotly_{item['sid']}")
+            # ✨ 關鍵 key 避免 Duplicate ID
+            st.plotly_chart(fig, use_container_width=True, key=f"plotly_v3_{item['sid']}")
 else:
-    st.info("👈 請由左側控制台開始掃描")
+    st.info("👈 請從左側控制台選擇模式並開始掃描。")
