@@ -15,7 +15,7 @@ import json
 import os
 
 # ==========================================
-# 0. 強大資料庫與數據引擎
+# 0. 資料庫引擎
 # ==========================================
 DB_FILE = "taiwan_electronic_stocks.json"
 
@@ -37,7 +37,7 @@ def get_stock_data(sid):
     except: return pd.DataFrame()
 
 # ==========================================
-# 1. 形態演算法 (顏色與邏輯)
+# 1. 形態演算法
 # ==========================================
 def analyze_patterns(df, config, days=15):
     if df is None or df.empty or len(df) < days: return None
@@ -53,28 +53,23 @@ def analyze_patterns(df, config, days=15):
         v_mean = v[-6:-1].mean() if len(v)>5 else v.mean()
         
         hits = []
-        # 三角收斂 (紫色)
         if config.get('tri') and (sh < -0.003 and sl > 0.003): 
             hits.append({"text": "📐三角收斂", "class": "badge-tri"})
-        # 旗箱整理 (灰色)
         if config.get('box') and (abs(sh) < 0.03 and abs(sl) < 0.03): 
             hits.append({"text": "📦旗箱整理", "class": "badge-box"})
-        # 今日爆量 (紅色)
         if config.get('vol') and (v[-1] > v_mean * 1.3): 
             hits.append({"text": "🚀今日爆量", "class": "badge-vol"})
         
-        if hits:
-            return {
-                "labels": hits, 
-                "lines": (sh, ih, sl, il, x), 
-                "price": round(float(df['Close'].iloc[-1]), 2), 
-                "vol": int(v[-1]//1000)
-            }
+        return {
+            "labels": hits, 
+            "lines": (sh, ih, sl, il, x), 
+            "price": round(float(df['Close'].iloc[-1]), 2), 
+            "vol": int(v[-1]//1000)
+        }
     except: return None
-    return None
 
 # ==========================================
-# 2. 手機版專屬樣式
+# 2. 手機版樣式
 # ==========================================
 st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
 st.markdown("""
@@ -96,11 +91,12 @@ st.markdown("""
     .badge-tri { background-color: #6c5ce7; border: 1px solid #6c5ce7; }
     .badge-box { background-color: #2d3436; border: 1px solid #2d3436; }
     .badge-vol { background-color: #d63031; border: 1px solid #d63031; }
+    .badge-none { background-color: #b2bec3; border: 1px solid #b2bec3; }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. 側邊欄控制台 (新增今日監控勾選功能)
+# 3. 側邊欄控制台
 # ==========================================
 db = load_full_db()
 
@@ -111,32 +107,29 @@ with st.sidebar:
     
     if "今日" in mode:
         st_autorefresh(interval=300000, key="auto_ref_today")
-        st.subheader("📡 今日監控設定")
-        # --- 新增的勾選欄 ---
-        t_tri = st.checkbox("📐 三角收斂 (紫色)", value=True, key="t_tri")
-        t_box = st.checkbox("📦 旗箱整理 (灰色)", value=True, key="t_box")
-        t_vol = st.checkbox("🚀 今日爆量 (紅色)", value=True, key="t_vol")
-        # ------------------
+        t_tri = st.checkbox("📐 三角收斂", value=True)
+        t_box = st.checkbox("📦 旗箱整理", value=True)
+        t_vol = st.checkbox("🚀 今日爆量", value=True)
         t_min_v = st.number_input("今日最低量 (張)", value=300)
         current_config = {'tri': t_tri, 'box': t_box, 'vol': t_vol}
         run_now = True
     else:
-        st.subheader("⏳ 歷史條件搜尋")
-        h_sid = st.text_input("個股代號 (選填)", placeholder="2330")
-        h_tri = st.checkbox("📐 三角收斂 (紫色)", value=True, key="h_tri")
-        h_box = st.checkbox("📦 旗箱整理 (灰色)", value=True, key="h_box")
-        h_vol = st.checkbox("🚀 今日爆量 (紅色)", value=True, key="h_vol")
+        h_sid = st.text_input("個股代號 (強制顯示)", placeholder="2330")
+        h_tri = st.checkbox("📐 三角收斂", value=True)
+        h_box = st.checkbox("📦 旗箱整理", value=True)
+        h_vol = st.checkbox("🚀 今日爆量", value=True)
         h_min_v = st.number_input("搜尋最低量 (張)", value=100)
         current_config = {'tri': h_tri, 'box': h_box, 'vol': h_vol}
-        run_now = st.button("🚀 開始掃描資料庫", type="primary", use_container_width=True)
+        run_now = st.button("🚀 開始掃描", type="primary", use_container_width=True)
 
 # ==========================================
 # 4. 分析與卡片渲染
 # ==========================================
 if run_now:
     st.subheader(f"🔍 {mode}")
+    is_specific_search = bool("手動" in mode and h_sid)
     
-    if "手動" in mode and h_sid:
+    if is_specific_search:
         targets = [(f"{h_sid.upper()}.TW", "手動"), (f"{h_sid.upper()}.TWO", "手動")]
     else:
         targets = list(db.items())[:150]
@@ -150,16 +143,31 @@ if run_now:
             sid, info = futures[f]
             df_stock = f.result()
             res = analyze_patterns(df_stock, current_config, days=15)
-            if res and (res['vol'] >= mv_limit or ("手動" in mode and h_sid)):
-                res.update({"sid": sid, "name": info['name'] if isinstance(info, dict) else info, "df": df_stock})
-                scan_results.append(res)
+            
+            if res:
+                # 判斷是否要顯示：
+                # 1. 如果是特定個股搜尋 -> 直接顯示
+                # 2. 如果符合勾選形態且量夠 -> 顯示
+                should_show = False
+                if is_specific_search:
+                    should_show = True
+                elif res['labels'] and res['vol'] >= mv_limit:
+                    should_show = True
+                
+                if should_show:
+                    res.update({"sid": sid, "name": info['name'] if isinstance(info, dict) else info, "df": df_stock})
+                    scan_results.append(res)
 
     if not scan_results:
-        st.info("💡 目前未發現符合形態的個股。")
+        st.info("💡 未發現符合形態標的。")
 
     for item in scan_results:
         clean_id = item['sid'].split('.')[0]
-        badges_html = "".join([f'<span class="badge {l["class"]}">{l["text"]}</span>' for l in item['labels']])
+        # 如果有形態則彩色顯示，若無形態(強制顯示情況)則顯示一般標籤
+        if item['labels']:
+            badges_html = "".join([f'<span class="badge {l["class"]}">{l["text"]}</span>' for l in item['labels']])
+        else:
+            badges_html = '<span class="badge badge-none">🔘 一般走勢</span>'
         
         st.markdown(f"""
             <div class="stock-card">
@@ -168,7 +176,7 @@ if run_now:
                     <span class="s-name">{item['name']}</span>
                 </div>
                 <div class="card-row">
-                    <span style="color:#666; font-size:0.9rem;">成交量: <b>{item['vol']} 張</b></span>
+                    <span style="color:#666; font-size:0.9rem;">量: <b>{item['vol']} 張</b></span>
                     <span class="price">${item['price']}</span>
                 </div>
                 <div class="badge-box">{badges_html}</div>
@@ -181,12 +189,10 @@ if run_now:
             fig = make_subplots(rows=1, cols=1)
             fig.add_trace(go.Candlestick(x=d_tail.index, open=d_tail['Open'], high=d_tail['High'], low=d_tail['Low'], close=d_tail['Close'], name="K"))
             
-            # 趨勢線
+            # 趨勢線 (紅壓、綠支)
             plot_d = d_tail.tail(15)
             fig.add_trace(go.Scatter(x=plot_d.index, y=sh*x_range+ih, line=dict(color='#ff4757', width=3, dash='dash')))
             fig.add_trace(go.Scatter(x=plot_d.index, y=sl*x_range+il, line=dict(color='#2ed573', width=3, dash='dot')))
             
             fig.update_layout(height=400, margin=dict(l=5,r=5,t=5,b=5), xaxis_rangeslider_visible=False, showlegend=False, template="plotly_white")
             st.plotly_chart(fig, use_container_width=True, key=f"f_{item['sid']}")
-else:
-    st.info("👈 請從側邊欄選單開啟「今日監控」或執行「手動搜尋」")
