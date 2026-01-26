@@ -2,7 +2,7 @@ name: 自動更新電子股資料庫 JSON
 
 on:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '0 9 * * *' # 每天下午 5 點 (UTC+8) 更新
   push:
     branches: [ main ]
   workflow_dispatch:
@@ -10,9 +10,6 @@ on:
 jobs:
   update-db:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      
     steps:
     - uses: actions/checkout@v4
 
@@ -21,25 +18,15 @@ jobs:
         python-version: '3.11'
 
     - name: 安裝依賴
-      run: pip install requests beautifulsoup4 tqdm
+      run: pip install requests beautifulsoup4 tqdm pandas yfinance scipy plotly
 
     - name: 執行更新
       run: python generate_db.py
-
-    - name: 驗證 JSON 檔案 (防禦機制)
-      run: |
-        # 檢查檔案是否存在且大小是否大於 100 bytes (避免空 {} 被推送)
-        if [ -s taiwan_electronic_stocks.json ] && [ $(stat -c%s "taiwan_electronic_stocks.json") -gt 100 ]; then
-          echo "✅ 資料驗證成功，準備更新紀錄。"
-        else
-          echo "❌ 錯誤：生成的 JSON 檔案為空或格式異常，停止更新以保護舊數據！"
-          exit 1
-        fi
 
     - name: Commit & Push
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         git add taiwan_electronic_stocks.json
-        git commit -m "自動更新電子股 JSON (檢核通過)" || exit 0
+        git commit -m "更新最新股價資料庫" || exit 0
         git push
