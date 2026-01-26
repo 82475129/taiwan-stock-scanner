@@ -20,6 +20,7 @@ DB_FILE = "taiwan_electronic_stocks.json"
 
 @st.cache_data(ttl=3600)
 def load_full_db():
+    # 預設基礎資料庫，若無外部 JSON 則使用此表
     base = {
         "2330.TW": {"name": "台積電", "cat": "電子"},
         "2454.TW": {"name": "聯發科", "cat": "電子"},
@@ -40,14 +41,14 @@ def get_stock_data(sid):
         df = yf.download(sid, period="45d", progress=False)
         if df.empty: return pd.DataFrame()
         
-        # ✨ 解決 DuplicateError：處理 MultiIndex 並刪除重複名稱的欄位
+        # 1. 處理 yfinance 的 MultiIndex 欄位
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         
-        # 只保留第一次出現的欄位 (例如重複的 Open, High 等)
+        # 2. ✨ 徹底解決 DuplicateError：刪除重複名稱的欄位
         df = df.loc[:, ~df.columns.duplicated()]
         
-        # 強制選取必要欄位，確保資料純淨
+        # 3. 強制選取必要欄位並確保名稱唯一
         required = ["Open", "High", "Low", "Close", "Volume"]
         df = df[required].dropna()
         return df
@@ -63,13 +64,13 @@ def analyze_patterns(df, config, days=15):
     
     d = df.tail(days)
     try:
-        # 確保提取為 1D 陣列
+        # 確保提取為 1D 陣列，並確保為 float 型態
         h = d["High"].values.flatten().astype(float)
         l = d["Low"].values.flatten().astype(float)
         v = d["Volume"].values.flatten().astype(float)
         x = np.arange(len(h))
         
-        # 線性回歸計算
+        # 線性回歸計算 (計算壓力線與支撐線斜率)
         sh, ih, *_ = linregress(x, h)
         sl, il, *_ = linregress(x, l)
     except:
@@ -78,10 +79,15 @@ def analyze_patterns(df, config, days=15):
     v_mean = np.mean(v[:-1]) if len(v) >= 2 else np.mean(v)
     hits = []
     
+    # 📐 三角收斂：高點下移，低點上移
     if config.get("tri") and sh < -0.003 and sl > 0.003:
         hits.append({"text": "📐三角收斂", "class": "badge-tri"})
+    
+    # 📦 旗箱整理：上下軌道趨於水平
     if config.get("box") and abs(sh) < 0.03 and abs(sl) < 0.03:
         hits.append({"text": "📦旗箱整理", "class": "badge-box"})
+    
+    # 🚀 今日爆量：今日量 > 均量 1.3 倍
     if config.get("vol") and v[-1] > v_mean * 1.3:
         hits.append({"text": "🚀今日爆量", "class": "badge-vol"})
 
@@ -115,7 +121,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. 側邊欄控制
+# 3. 側邊欄控制 (介面嚴格保留不變)
 # ==========================================
 db = load_full_db()
 modes = ["⚡ 今日即時監控 (自動)", "⏳ 歷史形態搜尋 (手動)", "🌐 顯示所有股票連結"]
@@ -136,7 +142,7 @@ with st.sidebar:
         t_min_v = st.number_input("最低量 (張)", value=300)
         run_now = True
     elif mode == "⏳ 歷史形態搜尋 (手動)":
-        h_sid = st.text_input("輸入個股代號", placeholder="例如: 2330")
+        h_sid = st.text_input("代號 (輸入即強制顯示圖表)", placeholder="例如: 2330")
         current_config = {
             "tri": st.checkbox("📐 三角收斂", True),
             "box": st.checkbox("📦 旗箱整理", True),
@@ -148,7 +154,7 @@ with st.sidebar:
         run_now = False
 
 # ==========================================
-# 4. 主畫面顯示
+# 4. 主畫面顯示邏輯
 # ==========================================
 if mode == "🌐 顯示所有股票連結":
     for sid, info in db.items():
@@ -158,17 +164,31 @@ if mode == "🌐 顯示所有股票連結":
 
 elif run_now:
     is_specific = (mode == "⏳ 歷史形態搜尋 (手動)" and h_sid.strip() != "")
-    targets = [(f"{h_sid.upper()}.TW", "個股"), (f"{h_sid.upper()}.TWO", "個股")] if is_specific else list(db.items())
+    
+    # ✨ 名稱抓取邏輯強化：手動搜尋時優先從 DB 比對正確名稱
+    if is_specific:
+        sid_tw = f"{h_sid.upper()}.TW"
+        sid_two = f"{h_sid.upper()}.TWO"
+        
+        def get_name(s):
+            info = db.get(s)
+            if not info: return None
+            return info['name'] if isinstance(info, dict) else info
+
+        name_found = get_name(sid_tw) or get_name(sid_two) or "個股"
+        targets = [(sid_tw, name_found), (sid_two, name_found)]
+    else:
+        # 自動監控模式
+        targets = []
+        for sid, info in db.items():
+            name = info['name'] if isinstance(info, dict) else info
+            targets.append((sid, name))
     
     mv_limit = t_min_v if mode.startswith("⚡") else h_min_v
     results = []
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as exe:
-        # ✨ 修正：解構 db 內容，確保拿到字串名稱
-        future_to_sid = {}
-        for sid, info in (targets if not is_specific else targets):
-            name = info['name'] if isinstance(info, dict) else info
-            future_to_sid[exe.submit(get_stock_data, sid)] = (sid, name)
+        future_to_sid = {exe.submit(get_stock_data, sid): (sid, name) for sid, name in targets}
             
         for f in concurrent.futures.as_completed(future_to_sid):
             sid, name = future_to_sid[f]
@@ -182,11 +202,14 @@ elif run_now:
     if not results:
         st.info("🔍 尚未發現符合條件的股票")
 
+    # 排序：有標籤的排前面
+    results.sort(key=lambda x: len(x["labels"]), reverse=True)
+
     for item in results:
         clean = item["sid"].split(".")[0]
         badges = "".join(f'<span class="badge {b["class"]}">{b["text"]}</span>' for b in item["labels"]) if item["labels"] else '<span class="badge badge-none">🔘 一般走勢</span>'
 
-        # ✨ 修正後的卡片：移除股價，顯示名稱
+        # ✨ 卡片介面：顯示代號+名稱，成交量，移除股價
         st.markdown(f"""
         <div class="stock-card">
             <div class="card-header">
@@ -209,7 +232,7 @@ elif run_now:
             fig.add_scatter(x=p.index, y=sl * x_reg + il, line=dict(dash="dot", color="#6c5ce7"), name="支撐線")
             
             fig.update_layout(height=400, xaxis_rangeslider_visible=False, showlegend=False, margin=dict(t=0, b=0, l=0, r=0))
-            # ✨ 修正：使用唯一 key 避免重複元件錯誤
+            # ✨ 關鍵修正：加上 unique key 解決重複元件 ID 錯誤
             st.plotly_chart(fig, use_container_width=True, key=f"plotly_{item['sid']}")
 else:
-    st.info("👈 請由左側功能表開始掃描")
+    st.info("👈 請由左側控制台開始掃描")
