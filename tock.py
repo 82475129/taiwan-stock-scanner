@@ -14,7 +14,7 @@ import requests
 from bs4 import BeautifulSoup
 
 # ==========================================
-# 0. 狀態鎖定與資料庫 (解決返回鍵跳頁問題)
+# 0. 狀態鎖定與資料庫 (架構完全保留)
 # ==========================================
 if 'current_mode' not in st.session_state:
     st.session_state.current_mode = "⚡ 今日即時監控 (自動)"
@@ -31,16 +31,18 @@ def load_full_db():
         except: return base_list
     return base_list
 
-# 新增：穩定的 Yahoo 即時股價抓取函式
+# --- 關鍵修正：針對您截圖中的 HTML 結構設計的即時抓取 ---
 def get_live_price_safe(sid):
     try:
         url = f"https://tw.stock.yahoo.com/quote/{sid}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         resp = requests.get(url, headers=headers, timeout=3)
         soup = BeautifulSoup(resp.text, 'html.parser')
-        # 修正：定位 Fz(32px) 這個大字標籤，並處理千分位逗號 (如 1,755 -> 1755.0)
-        price_tag = soup.select_one('span[class*="Fz(32px)"]')
+        
+        # 根據截圖，鎖定 Fz(32px) 與 Fw(b) 特徵
+        price_tag = soup.select_one('span[class*="Fz(32px)"][class*="Fw(b)"]')
         if price_tag:
+            # 處理 1,755 這種含逗號的格式
             return float(price_tag.text.replace(',', ''))
     except:
         pass
@@ -49,10 +51,11 @@ def get_live_price_safe(sid):
 @st.cache_data(ttl=300)
 def get_stock_data(sid):
     try: 
+        # yf 抓取歷史數據
         df = yf.download(sid, period="45d", progress=False, multi_level=False)
         if df.empty: return pd.DataFrame()
         
-        # 修正：將即時抓到的精準股價寫入數據
+        # 整合即時報價 (處理 1,755 問題)
         live_p = get_live_price_safe(sid)
         if live_p:
             df.iloc[-1, df.columns.get_loc('Close')] = live_p
@@ -67,7 +70,6 @@ def analyze_patterns(df, config, days=15):
     if df is None or df.empty or len(df) < days: return None
     try:
         d = df.tail(days).copy()
-        # 修正：確保 numpy 扁平化處理正確
         h = d['High'].values.flatten().astype(float)
         l = d['Low'].values.flatten().astype(float)
         v = d['Volume'].values.flatten().astype(float)
@@ -94,7 +96,7 @@ def analyze_patterns(df, config, days=15):
     except: return None
 
 # ==========================================
-# 2. 手機版專屬樣式 (解決排版與色彩辨識)
+# 2. 手機版專屬樣式 (架構不變)
 # ==========================================
 st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
 st.markdown("""
@@ -123,7 +125,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. 側邊欄：模式切換
+# 3. 側邊欄：模式切換 (架構與 UI 保持原樣)
 # ==========================================
 db = load_full_db()
 modes = ["⚡ 今日即時監控 (自動)", "⏳ 歷史形態搜尋 (手動)", "🌐 顯示所有股票連結"]
@@ -136,7 +138,9 @@ with st.sidebar:
     
     if selected_mode == "⚡ 今日即時監控 (自動)":
         st_autorefresh(interval=300000, key="auto_refresh")
-        t_tri, t_box, t_vol = st.checkbox("📐 三角收斂", True), st.checkbox("📦 旗箱整理", True), st.checkbox("🚀 今日爆量", True)
+        t_tri = st.checkbox("📐 三角收斂", value=True)
+        t_box = st.checkbox("📦 旗箱整理", value=True)
+        t_vol = st.checkbox("🚀 今日爆量", value=True)
         t_min_v = st.number_input("最低量 (張)", value=300)
         current_config = {'tri': t_tri, 'box': t_box, 'vol': t_vol}
         run_now = True
@@ -158,6 +162,7 @@ if st.session_state.current_mode == "🌐 顯示所有股票連結":
         st.markdown(f'<a href="{url}" target="_blank" class="link-item">{sid} {name}</a>', unsafe_allow_html=True)
 
 elif run_now:
+    st.subheader(f"🔍 {st.session_state.current_mode}")
     targets = [(f"{h_sid.upper()}.TW", "個股")] if (selected_mode == "⏳ 歷史形態搜尋 (手動)" and h_sid) else list(db.items())
     
     final_results = []
@@ -167,13 +172,14 @@ elif run_now:
             sid, info = futures[f]
             df_stock = f.result()
             res = analyze_patterns(df_stock, current_config)
-            # 修正過濾邏輯：手動搜尋必出，監控模式需符合形態與成交量
+            
+            # 手動搜尋必顯示 / 自動模式需過濾
             if res and (selected_mode == "⏳ 歷史形態搜尋 (手動)" or (res['labels'] and res['vol'] >= t_min_v)):
                 res.update({"sid": sid, "name": info, "df": df_stock})
                 final_results.append(res)
 
     for item in final_results:
-        # 修正：根據昨收價動態決定股價顏色 (紅漲綠跌)
+        # 動態計算顏色 (紅漲綠跌)
         price_color = "#d63031" if item['price'] >= item['prev_close'] else "#27ae60"
         b_html = "".join([f'<span class="badge {l["class"]}">{l["text"]}</span>' for l in item['labels']]) if item['labels'] else '<span class="badge badge-none">🔘 一般走勢</span>'
         
