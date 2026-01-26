@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+taiwan_electronic_stocks.json
+.DS_Store
