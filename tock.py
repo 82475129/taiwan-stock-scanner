@@ -1,189 +1,241 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 import json
 import os
-from datetime import datetime
+import time
+import concurrent.futures
 from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
-# 0. 資料庫核心
+# 1. 全域系統配置與資料庫路徑
 # ==========================================
 DB_FILE = "electronic_stocks_db.json"
+st.set_page_config(page_title="Pro-X 智能終端系統", layout="wide", initial_sidebar_state="expanded")
+
+# ==========================================
+# 2. 核心資料處理函數 (後端邏輯)
+# ==========================================
 
 def load_organized_db():
+    """讀取 JSON 並依照 category 進行結構化分組"""
     if not os.path.exists(DB_FILE):
-        st.warning("找不到 electronic_stocks_db.json，使用預設測試資料")
-        return {
-            "電子-半導體": {"2330.TW": "台積電", "2303.TW": "聯電"},
-            "電子-零組件": {"2324.TW": "仁寶", "2353.TW": "宏碁", "2395.TW": "研華", "3022.TW": "威強電"},
-            "電子-其他": {"2317.TW": "鴻海"}
-        }
-    
+        # 初始預設資料，防止讀取失敗
+        return {"電子板塊": {"2330.TW": {"name": "台積電", "category": "電子板塊"}}}
     try:
         with open(DB_FILE, "r", encoding="utf-8") as f:
             raw_data = json.load(f)
         
         organized = {}
         for sid, info in raw_data.items():
-            cat = info.get("category", "電子-其他")
+            # 支援您的爬蟲格式: {"2330.TW": {"name": "台積電", "category": "電子"}}
+            cat = info.get("category", "未分類板塊")
             if cat not in organized:
                 organized[cat] = {}
-            organized[cat][sid] = info.get("name", "未知")
+            organized[cat][sid] = info.get("name", "未知名稱")
         return organized
     except Exception as e:
-        st.error(f"讀取 JSON 失敗：{e}")
-        return {"錯誤": {"無資料": "請檢查 JSON 檔案"}}
+        st.error(f"資料庫讀取失敗: {e}")
+        return {}
+
+def save_to_json(sid, name, category):
+    """將新搜尋的股票寫入 JSON 資料庫"""
+    db = {}
+    if os.path.exists(DB_FILE):
+        with open(DB_FILE, "r", encoding="utf-8") as f:
+            db = json.load(f)
+    
+    db[sid] = {"name": name, "category": category}
+    with open(DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(db, f, ensure_ascii=False, indent=4)
 
 @st.cache_data(ttl=300)
-def get_k_line_data(sid: str) -> pd.DataFrame | None:
+def fetch_stock_financials(sid):
+    """抓取 K 線數據並處理 yfinance 的多重索引問題"""
     try:
-        df = yf.download(sid, period="60d", progress=False, auto_adjust=True)
-        if df.empty:
-            return None
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [col[0] for col in df.columns]
-        return df.dropna(how='all')
+        ticker = yf.Ticker(sid)
+        df = ticker.history(period="60d", interval="1d")
+        if df.empty: return None
+        # 修正欄位名稱
+        df = df.reset_index()
+        return df
     except:
         return None
 
 # ==========================================
-# 頁面設定與 CSS
+# 3. 專業視覺美化 (CSS 注入)
 # ==========================================
-st.set_page_config(page_title="Pro-X 形態大師", layout="wide", initial_sidebar_state="expanded")
-
 st.markdown("""
 <style>
-    @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;500;700&display=swap');
-    html, body, [class*="css"] { font-family: 'Noto Sans TC', sans-serif !important; background-color: #f8fafc; }
-    section[data-testid="stSidebar"] { background-color: #ffffff !important; border-right: 2px solid #eef2f6; }
+    /* 引入專業字體 */
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;700&family=Noto+Sans+TC:wght@400;700&display=swap');
     
-    .sector-header {
-        font-size: 24px; font-weight: 700; color: #1e293b;
-        background: white; padding: 16px 24px; border-radius: 12px;
-        margin: 32px 0 16px 0; border-left: 10px solid #6366f1;
-        box-shadow: 0 4px 10px rgba(0,0,0,0.06);
+    html, body, [class*="css"] { font-family: 'Noto Sans TC', sans-serif; background-color: #f4f7f9; }
+
+    /* 左側側邊欄固定樣式 (不隨主畫面滾動或閃爍) */
+    section[data-testid="stSidebar"] {
+        background-color: #ffffff !important;
+        border-right: 2px solid #eef2f6;
+        padding-top: 2rem;
     }
+
+    /* 分類區塊大標題 */
+    .category-container {
+        background: white;
+        padding: 15px 25px;
+        border-radius: 12px;
+        margin: 35px 0 20px 0;
+        border-left: 10px solid #4f46e5;
+        box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+    }
+    .category-text { font-size: 24px; font-weight: 700; color: #1e293b; }
+
+    /* 股票卡片樣式 */
     .stock-card {
-        background: white; padding: 20px; border-radius: 16px;
-        border: 1px solid #e2e8f0; margin-bottom: 12px;
-        box-shadow: 0 2px 6px rgba(0,0,0,0.04);
+        background: white;
+        padding: 24px;
+        border-radius: 16px;
+        border: 1px solid #e2e8f0;
+        margin-bottom: 20px;
+        transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     }
-    .stock-title {
-        font-size: 22px; font-weight: 700; color: #4338ca; text-decoration: none;
+    .stock-card:hover {
+        transform: translateY(-5px);
+        border-color: #4f46e5;
+        box-shadow: 0 20px 25px -5px rgba(0, 0, 0, 0.1);
     }
-    .stock-title:hover { color: #5b21b6; text-decoration: underline; }
-    .tag {
-        display: inline-block; padding: 5px 12px; border-radius: 10px;
-        font-size: 13.5px; font-weight: 600; margin: 8px 6px 0 0;
+
+    .stock-id-title {
+        font-size: 20px; font-weight: 700; color: #4f46e5; text-decoration: none;
     }
-    .tag-pattern { background: #f3e8ff; color: #7e22ce; }
+
+    /* 高級漸層按鈕 */
+    .stButton>button {
+        background: linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%);
+        color: white; border: none; padding: 12px 24px;
+        border-radius: 12px; font-weight: 700; width: 100%;
+        transition: all 0.3s;
+    }
+    .stButton>button:hover {
+        opacity: 0.9;
+        box-shadow: 0 8px 20px rgba(79, 70, 229, 0.4);
+    }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 側邊欄
+# 4. 左側側邊欄固定區 (Sidebar)
 # ==========================================
-db_groups = load_organized_db()
+organized_db = load_organized_db()
 
 with st.sidebar:
-    st.markdown("<h1 style='color:#6366f1;'>🎯 形態大師控制台</h1>", unsafe_allow_html=True)
-    st.caption("電子股形態監控")
+    st.markdown("<h2 style='color:#4f46e5;'>PRO-X 終端</h2>", unsafe_allow_html=True)
+    st.caption("版本 4.0 | 資料庫連動版")
+    st.divider()
+
+    # 功能 A: 搜尋與寫入
+    st.markdown("### 🔍 搜尋並寫入")
+    new_input = st.text_input("輸入代號 (例如 2360)", key="search_input")
+    
+    if new_input:
+        full_sid = f"{new_input.upper()}.TW" if "." not in new_input else new_input.upper()
+        try:
+            with st.spinner("查詢中..."):
+                t = yf.Ticker(full_sid)
+                s_name = t.info.get('shortName') or t.info.get('longName') or "未知個股"
+            
+            st.info(f"偵測標的: {s_name}")
+            # 選擇現有分類或新增
+            all_cats = list(organized_db.keys()) + ["+ 新增板塊"]
+            selected_cat = st.selectbox("歸類板塊", all_cats)
+            
+            final_cat = selected_cat
+            if selected_cat == "+ 新增板塊":
+                final_cat = st.text_input("輸入新板塊名稱")
+            
+            if st.button("📥 寫入 JSON 資料庫"):
+                save_to_json(full_sid, s_name, final_cat)
+                st.success("寫入成功！")
+                time.sleep(1)
+                st.rerun()
+        except:
+            st.error("代號無效")
+
     st.divider()
     
-    mode = st.radio("功能模式", [
-        "⚡ 今日即時監控",
-        "⏳ 歷史形態搜尋",
-        "🌐 顯示所有連結"
-    ], index=0)
+    # 功能 B: 過濾與自動刷新
+    st.markdown("### ⚙️ 介面過濾")
+    filter_query = st.text_input("過濾主畫面代號", placeholder="輸入代號...")
     
-    st.divider()
-    search_q = st.text_input("🔍 過濾代號／名稱", placeholder="2330 / 台積電")
+    st_autorefresh(interval=600000, key="auto_ref") # 10分鐘自動更新
     
-    st.divider()
-    st_autorefresh(interval=600000, key="autorefresh")
-    if st.button("🔄 強制刷新", use_container_width=True):
+    if st.button("🔄 重整快取"):
         st.cache_data.clear()
         st.rerun()
 
 # ==========================================
-# 主畫面
+# 5. 主畫面渲染區 (Main Content)
 # ==========================================
-st.markdown("<h2 style='text-align:center; color:#1e293b;'>🚀 智能電子股形態監控</h2>", unsafe_allow_html=True)
-st.caption(f"資料最後更新：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.markdown("<h1 style='text-align:center;'>🎯 智能分組監控系統</h1>", unsafe_allow_html=True)
 
-final_groups = {}
-search_q = (search_q or "").strip().upper()
-
-if search_q:
-    for cat, stocks in db_groups.items():
-        matched = {sid: name for sid, name in stocks.items() 
-                   if search_q in sid.upper() or search_q in name.upper()}
-        if matched:
-            final_groups[cat] = matched
+# 執行搜尋過濾
+display_groups = {}
+if filter_query:
+    for cat, stocks in organized_db.items():
+        sub_match = {sid: name for sid, name in stocks.items() if filter_query in sid}
+        if sub_match: display_groups[cat] = sub_match
 else:
-    final_groups = db_groups
+    display_groups = organized_db
 
-if not final_groups:
-    st.info("目前沒有符合條件的股票")
+# 循環產生板塊
+if not display_groups:
+    st.warning("⚠️ 資料庫為空或查無符合項目，請於左側搜尋並寫入股票。")
 else:
-    for category, stocks in final_groups.items():
-        st.markdown(f'<div class="sector-header">📂 {category}</div>', unsafe_allow_html=True)
+    for category, stocks in display_groups.items():
+        # 分類標題區
+        st.markdown(f"""
+        <div class="category-container">
+            <span class="category-text">📁 {category}</span>
+        </div>
+        """, unsafe_allow_html=True)
         
-        cols = st.columns(2) if len(stocks) >= 2 else [st.container()]
-        col_idx = 0
-        
-        for sid, name in stocks.items():
-            with cols[col_idx % len(cols)]:
-                # 只保留基本形態標籤（已移除爆量、成交量）
-                tags = [
-                    '<span class="tag tag-pattern">📐 三角收斂</span>'
-                ]
-                
-                df = get_k_line_data(sid)
-                if df is not None and len(df) >= 2:
-                    pct = (df['Close'][-1] - df['Close'][-2]) / df['Close'][-2] * 100
-                    if pct > 0.5:
-                        tags.append(f'<span class="tag tag-up">+{pct:.1f}%</span>')
-                    elif pct < -0.5:
-                        tags.append(f'<span class="tag tag-down">{pct:.1f}%</span>')
-                
+        # 股票卡片網格 (雙欄)
+        cols = st.columns(2)
+        for idx, (sid, name) in enumerate(stocks.items()):
+            with cols[idx % 2]:
                 st.markdown(f"""
                 <div class="stock-card">
-                    <div>
-                        <a class="stock-title" href="https://tw.stock.yahoo.com/quote/{sid.split('.')[0]}" target="_blank">
-                            {sid.split('.')[0]}　{name}
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <a class="stock-id-title" href="https://tw.stock.yahoo.com/quote/{sid.split('.')[0]}" target="_blank">
+                            🔗 {sid.split('.')[0]} {name}
                         </a>
+                        <span style="background:#f1f5f9; color:#64748b; padding:4px 10px; border-radius:8px; font-size:12px;">
+                            Active
+                        </span>
                     </div>
-                    <div>{' '.join(tags)}</div>
                 </div>
                 """, unsafe_allow_html=True)
                 
-                with st.expander("📈 展開 K 線圖（近60日）", expanded=False):
-                    if df is not None:
+                # 嵌入 K 線圖表
+                with st.expander("📊 查看技術形態圖表"):
+                    df_data = fetch_stock_financials(sid)
+                    if df_data is not None:
                         fig = go.Figure(data=[go.Candlestick(
-                            x=df.index,
-                            open=df['Open'], high=df['High'],
-                            low=df['Low'], close=df['Close'],
-                            increasing_line_color='#ef4444',
-                            decreasing_line_color='#22c55e'
+                            x=df_data['Date'],
+                            open=df_data['Open'],
+                            high=df_data['High'],
+                            low=df_data['Low'],
+                            close=df_data['Close']
                         )])
                         fig.update_layout(
-                            height=380,
-                            margin=dict(t=20, b=30, l=10, r=10),
+                            height=350, margin=dict(t=0, b=0, l=0, r=0),
                             xaxis_rangeslider_visible=False,
                             paper_bgcolor="rgba(0,0,0,0)",
-                            plot_bgcolor="#ffffff",
-                            font=dict(family="Noto Sans TC"),
-                            xaxis=dict(showgrid=True, gridcolor='#f1f5f9'),
-                            yaxis=dict(showgrid=True, gridcolor='#f1f5f9')
+                            plot_bgcolor="#f8fafc"
                         )
-                        st.plotly_chart(fig, use_container_width=True, key=f"chart_{sid}")
+                        st.plotly_chart(fig, use_container_width=True, key=f"fig_{sid}")
                     else:
-                        st.warning(f"無法載入 {sid} 資料")
-            
-            col_idx += 1
-
-st.markdown("---")
-st.caption("提示：定期執行 generate_db.py 更新股票清單")
+                        st.error("數據獲取超時")
