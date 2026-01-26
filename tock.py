@@ -178,3 +178,9 @@ if run and db:
                 st.plotly_chart(fig, use_container_width=True)
     else:
         st.info("💡 目前無符合形態的股票。")
+
+# ... 保持你原本的所有程式碼不變 ...
+
+if __name__ == "__main__":
+    # 當 GitHub Actions 執行 python tock.py 時會跑這裡
+    update_json_database()
