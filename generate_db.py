@@ -1,4 +1,3 @@
-# generate_db.py - 更新版：抓取 Yahoo 股市目前有效的電子細分類
 import requests
 import re
 from bs4 import BeautifulSoup
@@ -7,8 +6,6 @@ import time
 
 DB_FILE = "electronic_stocks_db.json"
 
-# 目前（2026年）仍有效的電子相關 sectorId
-# 來源：直接訪問 tw.stock.yahoo.com/class-quote 頁面觀察
 ELECTRONIC_TAI_IDS = {
     40: "半導體",
     41: "電腦及週邊設備",
@@ -33,72 +30,48 @@ ELECTRONIC_TWO_IDS = {
 
 def fetch_sector(sector_id, exchange, category_name):
     url = f"https://tw.stock.yahoo.com/class-quote?sectorId={sector_id}&exchange={exchange}"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
-                      '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'}
     
     try:
         r = requests.get(url, headers=headers, timeout=12)
         if r.status_code != 200:
-            print(f"請求失敗 {url} → status {r.status_code}")
+            print(f"失敗 {url} status {r.status_code}")
             return {}
         
         soup = BeautifulSoup(r.text, "html.parser")
-        
         stocks = {}
-        # 目前 Yahoo 類股頁面的 row 結構仍是 flex div
         rows = soup.find_all("div", class_=re.compile(r"table-row|D\(f\).*?Ai\(c\)"))
         
         for row in rows:
-            # 名稱區塊（通常是較粗體）
             name_div = row.find("div", class_=re.compile(r"Lh\(.*?Fw\(600\)"))
-            # 代碼區塊（通常灰色小字）
             code_span = row.find("span", class_=re.compile(r"Fz\(.*?C\(#.*?Ell"))
-            
             if name_div and code_span:
                 name = name_div.get_text(strip=True)
                 sid = code_span.get_text(strip=True).strip()
-                
-                # 驗證格式：1234.TW 或 1234.TWO
                 if re.match(r"^\d{4}\.(TW|TWO)$", sid):
-                    stocks[sid] = {
-                        "name": name,
-                        "category": f"電子-{category_name}"  # 細分電子子類別
-                    }
+                    stocks[sid] = {"name": name, "category": f"電子-{category_name}"}
         
-        print(f"{exchange} sector {sector_id} ({category_name}) → 取得 {len(stocks)} 檔")
+        print(f"{exchange} {category_name} → {len(stocks)} 檔")
         return stocks
-    
     except Exception as e:
-        print(f"抓取 {url} 失敗：{e}")
+        print(f"抓取失敗 {url}: {e}")
         return {}
-
 
 def main():
     full_db = {}
+    for sid, cat in ELECTRONIC_TAI_IDS.items():
+        full_db.update(fetch_sector(sid, "TAI", cat))
+        time.sleep(1.5)
+    for sid, cat in ELECTRONIC_TWO_IDS.items():
+        full_db.update(fetch_sector(sid, "TWO", cat))
+        time.sleep(1.5)
     
-    # 上市電子類
-    for sid, cat_name in ELECTRONIC_TAI_IDS.items():
-        stocks = fetch_sector(sid, "TAI", cat_name)
-        full_db.update(stocks)
-        time.sleep(1.2)  # 避免太快被 ban
-    
-    # 上櫃電子類
-    for sid, cat_name in ELECTRONIC_TWO_IDS.items():
-        stocks = fetch_sector(sid, "TWO", cat_name)
-        full_db.update(stocks)
-        time.sleep(1.2)
-    
-    num_stocks = len(full_db)
-    if num_stocks > 0:
+    if full_db:
         with open(DB_FILE, 'w', encoding='utf-8') as f:
             json.dump(full_db, f, ensure_ascii=False, indent=2)
-        print(f"\n成功產生 electronic_stocks_db.json，共 {num_stocks} 檔電子股！")
-        print("範例：", list(full_db.items())[:3])
+        print(f"成功產生 {len(full_db)} 檔電子股")
     else:
-        print("抓取完全失敗，JSON 為空。請檢查網路或 Yahoo 頁面是否又改版。")
-
+        print("產生失敗，資料庫為空")
 
 if __name__ == "__main__":
     main()
