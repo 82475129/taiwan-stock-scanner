@@ -2,10 +2,10 @@ name: 自動更新電子股資料庫 JSON
 
 on:
   schedule:
-    - cron: '0 0 * * *'
+    - cron: '0 0 * * *'  # 每天午夜執行一次
   push:
-    branches: [ main ]
-  workflow_dispatch:
+    branches: [ main ]    # 當代碼推送到 main 時執行
+  workflow_dispatch:      # 允許手動點擊執行
 
 jobs:
   update-db:
@@ -22,15 +22,17 @@ jobs:
     - name: 安裝依賴
       run: |
         python -m pip install --upgrade pip
-        pip install requests beautifulsoup4
+        # 關鍵修正：必須加入 tqdm，否則執行會報錯
+        pip install requests beautifulsoup4 tqdm
 
     - name: 執行更新
       run: python generate_db.py
 
     - name: Commit & Push
       run: |
-        git config --global user.name "GitHub Actions"
-        git config --global user.email "actions@github.com"
-        git add electronic_stocks_db.json
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        # 關鍵修正：檔案名稱必須與 generate_db.py 產出的檔名一致
+        git add taiwan_electronic_stocks.json
         git commit -m "自動更新電子股 JSON $(date '+%Y-%m-%d')" || echo "無變更"
-        git push || echo "Push 跳過"
+        git push
