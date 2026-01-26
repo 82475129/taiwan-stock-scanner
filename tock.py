@@ -89,7 +89,7 @@ def load_db():
 # ==========================================
 # 3. 形態分析演算法（穩定版）
 # ==========================================
-@st.cache_data(ttl=1800)  # 快取 30 分鐘，避免重抓
+@st.cache_data(ttl=1800)  # 快取 30 分鐘
 def get_stock_data(sid):
     try:
         df = yf.download(sid, period="90d", progress=False, timeout=15)
@@ -129,124 +129,7 @@ def _analyze_pattern_logic(df):
     return labels, (sh, ih, sl, il), is_tri, is_box, is_vol
 
 # ==========================================
-# 4. 介面 CSS
-# ==========================================
-st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
-st.markdown("""
-    <style>
-    .stApp { background: #f9f9fb; }
-    .hero-section { background: white; padding: 25px; border-radius: 15px; text-align: center; border-bottom: 5px solid #6c5ce7; box-shadow: 0 4px 15px rgba(0,0,0,0.05); margin-bottom: 20px; }
-    .stock-card { background: white; padding: 18px; border-radius: 12px; border-left: 8px solid #6c5ce7; margin-top: 15px; box-shadow: 0 4px 8px rgba(0,0,0,0.03); }
-    .badge { padding: 4px 10px; border-radius: 5px; font-size: 12px; font-weight: bold; color: white; margin-left: 6px; }
-    .badge-tri { background: #6c5ce7; } .badge-vol { background: #ff7675; } .badge-box { background: #2d3436; }
-    </style>
-""", unsafe_allow_html=True)
-
-# ==========================================
-# 5. 首頁標題
-# ==========================================
-st.markdown(f"""
-    <div class="hero-section">
-        <h1 style='color: #6c5ce7; margin:0;'>🎯 台股 Pro-X 形態大師</h1>
-        <p style='color: #636e72; margin-top:10px;'>專業級大數據掃描系統 | 電子與三角收斂預設監控</p>
-        <p style='color: #b2bec3; font-size: 0.8em;'>同步時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
-    </div>
-""", unsafe_allow_html=True)
-
-# ==========================================
-# 6. 側邊欄 + 自動搜尋邏輯
-# ==========================================
-with st.sidebar:
-    st.header("⚙️ 設定中心")
-
-    st.subheader("📡 A. 自動監控模式")
-    auto_toggle = st.toggle("啟動自動巡航", value=False, key="auto_toggle")
-    if auto_toggle:
-        st_autorefresh(interval=300000, key="auto_refresh")  # 每 5 分鐘 (300秒)
-
-    with st.expander("自動監控勾選藍", expanded=auto_toggle):
-        a_elec = st.checkbox("自動-電子類股", value=True, key="a_elec")
-        a_food = st.checkbox("自動-食品類股", value=False, key="a_food")
-        a_other = st.checkbox("自動-其他類股", value=False, key="a_other")
-        st.write("---")
-        a_tri = st.checkbox("自動-監控三角", value=False, key="a_tri")
-        a_box = st.checkbox("自動-監控旗箱", value=False, key="a_box")
-        a_vol = st.checkbox("自動-監控爆量", value=True, key="a_vol")
-
-    st.divider()
-
-    st.subheader("🚀 B. 手動掃描模式")
-    with st.expander("手動掃描勾選藍", expanded=True):
-        m_elec = st.checkbox("手動-電子類股", value=True, key="m_elec")
-        m_food = st.checkbox("手動-食品類股", value=False, key="m_food")
-        m_other = st.checkbox("手動-其他類股", value=False, key="m_other")
-        st.write("---")
-        m_tri = st.checkbox("手動-偵測三角", value=False, key="m_tri")
-        m_box = st.checkbox("手動-偵測旗箱", value=False, key="m_box")
-        m_vol = st.checkbox("手動-偵測爆量", value=True, key="m_vol")
-
-    st.divider()
-    input_sid = st.text_input("輸入個股代號", placeholder="例如: 2330", key="input_sid")
-    max_limit = st.slider("掃描上限", 50, 1000, 200, key="max_limit")
-    min_vol_val = st.number_input("最低張數門檻", value=300, key="min_vol_val")
-
-    if st.button("🚀 立即搜尋", use_container_width=True, type="primary", key="btn_manual"):
-        st.session_state["run_search"] = True
-
-# ==========================================
-# 7. 搜尋觸發邏輯（自動 + 勾選變更即時觸發）
-# ==========================================
-if "run_search" not in st.session_state:
-    st.session_state["run_search"] = False
-
-# 只要自動巡航開啟、按下按鈕，或勾選項目改變，就立即搜尋
-if auto_toggle or st.session_state["run_search"] or \
-   any([a_elec, a_food, a_other, a_tri, a_box, a_vol, m_elec, m_food, m_other, m_tri, m_box, m_vol]):
-    if st.session_state["run_search"]:
-        st.session_state["run_search"] = False
-
-    with st.status("🔍 正在搜尋中...", expanded=True) as status:
-        final_list, scan_title = execute_engine(auto_toggle)
-
-        if final_list:
-            table_data = []
-            for item in final_list:
-                sid = item['sid']
-                yahoo_url = f"https://tw.stock.yahoo.com/quote/{sid}"
-                link_sid = f"[{sid}]({yahoo_url})"
-                badges = " ".join([f'<span class="badge {"badge-tri" if "三角" in l else "badge-vol" if "爆量" in l else "badge-box"}">{l}</span>' for l in item['labels']])
-                table_data.append({
-                    "代號": link_sid,
-                    "名稱": item['name'],
-                    "現價": f"{item['price']:.2f}",
-                    "成交量(張)": item['vol'],
-                    "形態": badges
-                })
-
-            df_table = pd.DataFrame(table_data)
-            st.subheader(scan_title)
-            st.markdown(df_table.to_markdown(index=False), unsafe_allow_html=True)
-
-            st.subheader("📊 個股 K 線圖")
-            for item in final_list:
-                with st.expander(f"{item['sid']} {item['name']} ({item['cat']})"):
-                    d, (sh, ih, sl, il) = item['df'], item['lines']
-                    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
-                    fig.add_trace(go.Candlestick(x=d.index, open=d['Open'], high=d['High'], low=d['Low'], close=d['Close']), row=1, col=1)
-                    xv = np.arange(len(d))
-                    fig.add_trace(go.Scatter(x=d.index, y=sh * xv + ih, line=dict(color='red', width=2, dash='dash')), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=d.index, y=sl * xv + il, line=dict(color='green', width=2, dash='dot')), row=1, col=1)
-                    fig.add_trace(go.Bar(x=d.index, y=d['Volume'], marker_color='blue', opacity=0.4), row=2, col=1)
-                    fig.update_layout(height=450, template="plotly_white", xaxis_rangeslider_visible=False, showlegend=False,
-                                      margin=dict(l=10, r=10, t=10, b=10))
-                    st.plotly_chart(fig, use_container_width=True, key=f"f_{item['sid']}")
-        else:
-            st.info("本次搜尋無符合結果，請稍後重試或調整勾選項目。")
-
-        status.update(label=f"✅ 搜尋完成！發現 {len(final_list)} 檔標的", state="complete")
-
-# ==========================================
-# 8. 分析引擎（完全分開 + 動態標題）
+# 4. 分析引擎（必須定義在前面）
 # ==========================================
 def execute_engine(is_auto_mode):
     if is_auto_mode:
@@ -323,3 +206,120 @@ def execute_engine(is_auto_mode):
         title = "🔍 形態掃描結果"
 
     return results, title
+
+# ==========================================
+# 5. 介面 CSS
+# ==========================================
+st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
+st.markdown("""
+    <style>
+    .stApp { background: #f9f9fb; }
+    .hero-section { background: white; padding: 25px; border-radius: 15px; text-align: center; border-bottom: 5px solid #6c5ce7; box-shadow: 0 4px 15px rgba(0,0,0,0.05); margin-bottom: 20px; }
+    .stock-card { background: white; padding: 18px; border-radius: 12px; border-left: 8px solid #6c5ce7; margin-top: 15px; box-shadow: 0 4px 8px rgba(0,0,0,0.03); }
+    .badge { padding: 4px 10px; border-radius: 5px; font-size: 12px; font-weight: bold; color: white; margin-left: 6px; }
+    .badge-tri { background: #6c5ce7; } .badge-vol { background: #ff7675; } .badge-box { background: #2d3436; }
+    </style>
+""", unsafe_allow_html=True)
+
+# ==========================================
+# 6. 首頁標題
+# ==========================================
+st.markdown(f"""
+    <div class="hero-section">
+        <h1 style='color: #6c5ce7; margin:0;'>🎯 台股 Pro-X 形態大師</h1>
+        <p style='color: #636e72; margin-top:10px;'>專業級大數據掃描系統 | 電子與三角收斂預設監控</p>
+        <p style='color: #b2bec3; font-size: 0.8em;'>同步時間：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}</p>
+    </div>
+""", unsafe_allow_html=True)
+
+# ==========================================
+# 7. 側邊欄 + 自動搜尋邏輯
+# ==========================================
+with st.sidebar:
+    st.header("⚙️ 設定中心")
+
+    st.subheader("📡 A. 自動監控模式")
+    auto_toggle = st.toggle("啟動自動巡航", value=False, key="auto_toggle")
+    if auto_toggle:
+        st_autorefresh(interval=300000, key="auto_refresh")  # 每 5 分鐘 (300秒)
+
+    with st.expander("自動監控勾選藍", expanded=auto_toggle):
+        a_elec = st.checkbox("自動-電子類股", value=True, key="a_elec")
+        a_food = st.checkbox("自動-食品類股", value=False, key="a_food")
+        a_other = st.checkbox("自動-其他類股", value=False, key="a_other")
+        st.write("---")
+        a_tri = st.checkbox("自動-監控三角", value=False, key="a_tri")
+        a_box = st.checkbox("自動-監控旗箱", value=False, key="a_box")
+        a_vol = st.checkbox("自動-監控爆量", value=True, key="a_vol")
+
+    st.divider()
+
+    st.subheader("🚀 B. 手動掃描模式")
+    with st.expander("手動掃描勾選藍", expanded=True):
+        m_elec = st.checkbox("手動-電子類股", value=True, key="m_elec")
+        m_food = st.checkbox("手動-食品類股", value=False, key="m_food")
+        m_other = st.checkbox("手動-其他類股", value=False, key="m_other")
+        st.write("---")
+        m_tri = st.checkbox("手動-偵測三角", value=False, key="m_tri")
+        m_box = st.checkbox("手動-偵測旗箱", value=False, key="m_box")
+        m_vol = st.checkbox("手動-偵測爆量", value=True, key="m_vol")
+
+    st.divider()
+    input_sid = st.text_input("輸入個股代號", placeholder="例如: 2330", key="input_sid")
+    max_limit = st.slider("掃描上限", 50, 1000, 200, key="max_limit")
+    min_vol_val = st.number_input("最低張數門檻", value=300, key="min_vol_val")
+
+    if st.button("🚀 立即搜尋", use_container_width=True, type="primary", key="btn_manual"):
+        st.session_state["run_search"] = True
+
+# ==========================================
+# 8. 搜尋觸發邏輯（自動 + 勾選變更即時觸發）
+# ==========================================
+if "run_search" not in st.session_state:
+    st.session_state["run_search"] = False
+
+# 只要自動巡航開啟、按下按鈕，或勾選項目改變，就立即搜尋
+if auto_toggle or st.session_state["run_search"] or \
+   any([a_elec, a_food, a_other, a_tri, a_box, a_vol, m_elec, m_food, m_other, m_tri, m_box, m_vol]):
+    if st.session_state["run_search"]:
+        st.session_state["run_search"] = False
+
+    with st.status("🔍 正在搜尋中...", expanded=True) as status:
+        final_list, scan_title = execute_engine(auto_toggle)
+
+        if final_list:
+            table_data = []
+            for item in final_list:
+                sid = item['sid']
+                yahoo_url = f"https://tw.stock.yahoo.com/quote/{sid}"
+                link_sid = f"[{sid}]({yahoo_url})"
+                badges = " ".join([f'<span class="badge {"badge-tri" if "三角" in l else "badge-vol" if "爆量" in l else "badge-box"}">{l}</span>' for l in item['labels']])
+                table_data.append({
+                    "代號": link_sid,
+                    "名稱": item['name'],
+                    "現價": f"{item['price']:.2f}",
+                    "成交量(張)": item['vol'],
+                    "形態": badges
+                })
+
+            df_table = pd.DataFrame(table_data)
+            st.subheader(scan_title)
+            st.markdown(df_table.to_markdown(index=False), unsafe_allow_html=True)
+
+            st.subheader("📊 個股 K 線圖")
+            for item in final_list:
+                with st.expander(f"{item['sid']} {item['name']} ({item['cat']})"):
+                    d, (sh, ih, sl, il) = item['df'], item['lines']
+                    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05, row_heights=[0.7, 0.3])
+                    fig.add_trace(go.Candlestick(x=d.index, open=d['Open'], high=d['High'], low=d['Low'], close=d['Close']), row=1, col=1)
+                    xv = np.arange(len(d))
+                    fig.add_trace(go.Scatter(x=d.index, y=sh * xv + ih, line=dict(color='red', width=2, dash='dash')), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=d.index, y=sl * xv + il, line=dict(color='green', width=2, dash='dot')), row=1, col=1)
+                    fig.add_trace(go.Bar(x=d.index, y=d['Volume'], marker_color='blue', opacity=0.4), row=2, col=1)
+                    fig.update_layout(height=450, template="plotly_white", xaxis_rangeslider_visible=False, showlegend=False,
+                                      margin=dict(l=10, r=10, t=10, b=10))
+                    st.plotly_chart(fig, use_container_width=True, key=f"f_{item['sid']}")
+        else:
+            st.info("本次搜尋無符合結果，請稍後重試或調整勾選項目。")
+
+        status.update(label=f"✅ 搜尋完成！發現 {len(final_list)} 檔標的", state="complete")
