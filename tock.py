@@ -72,7 +72,6 @@ def fetch_all_electronic_stocks(force_save=False):
     
     return full_db
 
-
 # ==========================================
 # 2. 載入 DB
 # ==========================================
@@ -87,11 +86,10 @@ def load_db():
         st.info(f"使用既有 DB，共 {num_stocks} 檔電子股（上次更新於 {datetime.fromtimestamp(os.path.getmtime(DB_FILE)).strftime('%Y-%m-%d %H:%M')}）")
     return db
 
-
 # ==========================================
 # 3. 形態分析演算法（穩定版）
 # ==========================================
-@st.cache_data(ttl=1800)  # 快取 30 分鐘
+@st.cache_data(ttl=1800)  # 快取 30 分鐘，避免重抓
 def get_stock_data(sid):
     try:
         df = yf.download(sid, period="90d", progress=False, timeout=15)
@@ -105,7 +103,6 @@ def _analyze_pattern_logic(df):
 
     d = df.tail(45).copy()
 
-    # 穩定三角判斷：整體趨勢 + 寬鬆斜率
     first_high = d['High'].iloc[0]
     last_high = d['High'].iloc[-1]
     first_low = d['Low'].iloc[0]
@@ -131,7 +128,6 @@ def _analyze_pattern_logic(df):
 
     return labels, (sh, ih, sl, il), is_tri, is_box, is_vol
 
-
 # ==========================================
 # 4. 介面 CSS
 # ==========================================
@@ -146,7 +142,6 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-
 # ==========================================
 # 5. 首頁標題
 # ==========================================
@@ -158,7 +153,6 @@ st.markdown(f"""
     </div>
 """, unsafe_allow_html=True)
 
-
 # ==========================================
 # 6. 側邊欄 + 自動搜尋邏輯
 # ==========================================
@@ -168,7 +162,7 @@ with st.sidebar:
     st.subheader("📡 A. 自動監控模式")
     auto_toggle = st.toggle("啟動自動巡航", value=False, key="auto_toggle")
     if auto_toggle:
-        st_autorefresh(interval=300000, key="auto_refresh")  # 改成每 5 分鐘 (300秒) 自動搜尋一次
+        st_autorefresh(interval=300000, key="auto_refresh")  # 每 5 分鐘 (300秒)
 
     with st.expander("自動監控勾選藍", expanded=auto_toggle):
         a_elec = st.checkbox("自動-電子類股", value=True, key="a_elec")
@@ -196,7 +190,6 @@ with st.sidebar:
     max_limit = st.slider("掃描上限", 50, 1000, 200, key="max_limit")
     min_vol_val = st.number_input("最低張數門檻", value=300, key="min_vol_val")
 
-    # 按鈕（手動觸發）
     if st.button("🚀 立即搜尋", use_container_width=True, type="primary", key="btn_manual"):
         st.session_state["run_search"] = True
 
@@ -209,14 +202,12 @@ if "run_search" not in st.session_state:
 # 只要自動巡航開啟、按下按鈕，或勾選項目改變，就立即搜尋
 if auto_toggle or st.session_state["run_search"] or \
    any([a_elec, a_food, a_other, a_tri, a_box, a_vol, m_elec, m_food, m_other, m_tri, m_box, m_vol]):
-    # 重置手動按鈕狀態
     if st.session_state["run_search"]:
         st.session_state["run_search"] = False
 
     with st.status("🔍 正在搜尋中...", expanded=True) as status:
         final_list, scan_title = execute_engine(auto_toggle)
 
-        # 顯示結果
         if final_list:
             table_data = []
             for item in final_list:
@@ -268,69 +259,67 @@ def execute_engine(is_auto_mode):
     if not cats and not input_sid:
         return [], "🔍 形態掃描結果"
 
-    with st.status("🔍 正在分析資料...", expanded=True) as status:
-        db = load_db()
-        results = []
+    db = load_db()
+    results = []
 
-        if input_sid:
-            sid = input_sid.strip().upper()
-            targets = [(f"{sid}.TW", {"name": "查詢標的", "category": "手動"}),
-                       (f"{sid}.TWO", {"name": "查詢標的", "category": "手動"})]
-        else:
-            targets = [(sid, info) for sid, info in db.items() if info['category'] in cats][:max_limit]
+    if input_sid:
+        sid = input_sid.strip().upper()
+        targets = [(f"{sid}.TW", {"name": "查詢標的", "category": "手動"}),
+                   (f"{sid}.TWO", {"name": "查詢標的", "category": "手動"})]
+    else:
+        targets = [(sid, info) for sid, info in db.items() if info['category'] in cats][:max_limit]
 
-        min_vol_threshold = 150 if "電子" in cats else min_vol_val
+    min_vol_threshold = 150 if "電子" in cats else min_vol_val
 
-        def worker(target):
-            sid, info = target
-            try:
-                df = get_stock_data(sid)  # 使用快取
-                if df.empty or len(df) < 45:
-                    return None
-                v_now = int(df['Volume'].iloc[-1] // 1000)
-                if not input_sid and v_now < min_vol_threshold:
-                    return None
-                labels, lines, i_tri, i_bx, i_vo = _analyze_pattern_logic(df)
-                selected_labels = []
-                if pats.get('tri') and i_tri:
-                    selected_labels.append("📐 三角收斂")
-                if pats.get('box') and i_bx:
-                    selected_labels.append("📦 旗箱矩形")
-                if pats.get('vol') and i_vo:
-                    selected_labels.append("🚀 爆量突破")
-                if input_sid:
-                    selected_labels = labels
-                if selected_labels:
-                    return {
-                        "sid": sid,
-                        "name": info['name'],
-                        "cat": info['category'],
-                        "df": df.tail(50),
-                        "lines": lines,
-                        "labels": selected_labels,
-                        "price": float(df['Close'].iloc[-1]),
-                        "vol": v_now
-                    }
-            except Exception as e:
-                st.warning(f"{sid} 下載失敗：{str(e)}")
+    def worker(target):
+        sid, info = target
+        try:
+            df = get_stock_data(sid)
+            if df.empty or len(df) < 45:
                 return None
+            v_now = int(df['Volume'].iloc[-1] // 1000)
+            if not input_sid and v_now < min_vol_threshold:
+                return None
+            labels, lines, i_tri, i_bx, i_vo = _analyze_pattern_logic(df)
+            selected_labels = []
+            if pats.get('tri') and i_tri:
+                selected_labels.append("📐 三角收斂")
+            if pats.get('box') and i_bx:
+                selected_labels.append("📦 旗箱矩形")
+            if pats.get('vol') and i_vo:
+                selected_labels.append("🚀 爆量突破")
+            if input_sid:
+                selected_labels = labels
+            if selected_labels:
+                return {
+                    "sid": sid,
+                    "name": info['name'],
+                    "cat": info['category'],
+                    "df": df.tail(50),
+                    "lines": lines,
+                    "labels": selected_labels,
+                    "price": float(df['Close'].iloc[-1]),
+                    "vol": v_now
+                }
+        except Exception as e:
+            st.warning(f"{sid} 下載失敗：{str(e)}")
+            return None
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
-            futures = [executor.submit(worker, t) for t in targets]
-            for f in concurrent.futures.as_completed(futures):
-                res = f.result()
-                if res:
-                    results.append(res)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as executor:
+        futures = [executor.submit(worker, t) for t in targets]
+        for f in concurrent.futures.as_completed(futures):
+            res = f.result()
+            if res:
+                results.append(res)
 
-        # 動態標題
-        if pats.get('vol') and not pats.get('tri') and not pats.get('box'):
-            title = "🔍 爆量突破掃描結果"
-        elif pats.get('tri') and not pats.get('vol') and not pats.get('box'):
-            title = "🔍 三角收斂掃描結果"
-        elif pats.get('box') and not pats.get('tri') and not pats.get('vol'):
-            title = "🔍 旗箱矩形掃描結果"
-        else:
-            title = "🔍 形態掃描結果"
+    # 動態標題
+    if pats.get('vol') and not pats.get('tri') and not pats.get('box'):
+        title = "🔍 爆量突破掃描結果"
+    elif pats.get('tri') and not pats.get('vol') and not pats.get('box'):
+        title = "🔍 三角收斂掃描結果"
+    elif pats.get('box') and not pats.get('tri') and not pats.get('vol'):
+        title = "🔍 旗箱矩形掃描結果"
+    else:
+        title = "🔍 形態掃描結果"
 
-        status.update(label=f"✅ 搜尋完成！發現 {len(results)} 檔標的", state="complete")
-        return results, title
+    return results, title
