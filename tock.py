@@ -87,11 +87,14 @@ def _analyze_pattern_logic(df):
 
     d = df.tail(45).copy()
     x = np.arange(len(d))
-    h, l, v = d['High'].values.flatten(), d['Low'].values.flatten(), d['Volume'].values.flatten()
+    # 處理多層索引或單層索引數據
+    h = d['High'].values.flatten()
+    l = d['Low'].values.flatten()
+    v = d['Volume'].values.flatten()
+    
     sh, ih, _, _, _ = linregress(x, h)
     sl, il, _, _, _ = linregress(x, l)
 
-    # 形態判定
     is_tri = (sh < -0.0001 and sl > 0.0001)
     is_box = (abs(sh) < 0.0006) and (abs(sl) < 0.0006)
     vol_mean = v[-10:-1].mean() if len(v) > 10 else v.mean()
@@ -104,7 +107,7 @@ def _analyze_pattern_logic(df):
     return labels, (sh, ih, sl, il), is_tri, is_box, is_vol
 
 # ==========================================
-# 3. 分析引擎 (核心邏輯)
+# 3. 分析引擎
 # ==========================================
 def execute_engine(cats, pats, input_sid, max_limit, min_vol_val):
     if not cats and not input_sid:
@@ -115,6 +118,7 @@ def execute_engine(cats, pats, input_sid, max_limit, min_vol_val):
 
     if input_sid:
         sid = input_sid.strip().upper()
+        # 同時嘗試 .TW 與 .TWO
         targets = [(f"{sid}.TW", {"name": "查詢標的", "category": "手動"}),
                    (f"{sid}.TWO", {"name": "查詢標的", "category": "手動"})]
     else:
@@ -175,48 +179,48 @@ st.markdown(f"""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 5. 側邊欄 (手動+自動全保留)
+# 5. 側邊欄：手動與自動設定
 # ==========================================
 with st.sidebar:
     st.header("⚙️ 設定中心")
     
-    # --- A. 自動巡航 ---
     auto_toggle = st.toggle("啟動自動巡航 (5分/次)", value=False)
     if auto_toggle:
         st_autorefresh(interval=300000, key="auto_refresh")
 
+    # A. 自動設定區
     with st.expander("📡 A. 自動監控設定", expanded=auto_toggle):
-        a_elec = st.checkbox("自動-電子類股", value=True)
-        a_food = st.checkbox("自動-食品類股", value=False)
-        a_other = st.checkbox("自動-其他類股", value=False)
+        a_elec = st.checkbox("自動-電子類股", value=True, key="a_e")
+        a_food = st.checkbox("自動-食品類股", value=False, key="a_f")
+        a_other = st.checkbox("自動-其他類股", value=False, key="a_o")
         st.write("---")
-        a_tri = st.checkbox("自動-監控三角", value=False)
-        a_box = st.checkbox("自動-監控旗箱", value=False)
-        a_vol = st.checkbox("自動-監控爆量", value=True)
+        a_tri = st.checkbox("自動-監控三角", value=False, key="a_t")
+        a_box = st.checkbox("自動-監控旗箱", value=False, key="a_b")
+        a_vol = st.checkbox("自動-監控爆量", value=True, key="a_v")
 
     st.divider()
 
-    # --- B. 手動掃描 ---
+    # B. 手動設定區
     with st.expander("🚀 B. 手動掃描設定", expanded=not auto_toggle):
-        m_elec = st.checkbox("手動-電子類股", value=True)
-        m_food = st.checkbox("手動-食品類股", value=False)
-        m_other = st.checkbox("手動-其他類股", value=False)
+        m_elec = st.checkbox("手動-電子類股", value=True, key="m_e")
+        m_food = st.checkbox("手動-食品類股", value=False, key="m_f")
+        m_other = st.checkbox("手動-其他類股", value=False, key="m_o")
         st.write("---")
-        m_tri = st.checkbox("手動-偵測三角", value=False)
-        m_box = st.checkbox("手動-偵測旗箱", value=False)
-        m_vol = st.checkbox("手動-偵測爆量", value=True)
+        m_tri = st.checkbox("手動-偵測三角", value=False, key="m_t")
+        m_box = st.checkbox("手動-偵測旗箱", value=False, key="m_b")
+        m_vol = st.checkbox("手動-偵測爆量", value=True, key="m_v")
 
     st.divider()
-    input_sid = st.text_input("輸入個股代號 (優先查詢)", placeholder="例如: 2330")
+    input_sid = st.text_input("輸入個股代號", placeholder="例如: 2330", key="main_input")
     max_limit = st.slider("掃描上限", 50, 1000, 200)
     min_vol_val = st.number_input("最低張數門檻", value=300)
     
     run_search = st.button("🚀 執行手動搜尋", use_container_width=True, type="primary")
 
 # ==========================================
-# 6. 主程式執行邏輯
+# 6. 主程式執行
 # ==========================================
-# 決定要用哪一組設定 (自動或手動)
+# 根據開關決定邏輯參數
 if auto_toggle:
     current_cats = [c for c, v in {"電子": a_elec, "食品": a_food, "其他": a_other}.items() if v]
     current_pats = {"tri": a_tri, "box": a_box, "vol": a_vol}
@@ -224,14 +228,14 @@ else:
     current_cats = [c for c, v in {"電子": m_elec, "食品": m_food, "其他": m_other}.items() if v]
     current_pats = {"tri": m_tri, "box": m_box, "vol": m_vol}
 
-# 觸發條件：按下按鈕、自動巡航開啟、或是輸入了個股代號
+# 觸發掃描
 if run_search or auto_toggle or input_sid:
-    with st.status("🔍 市場掃描中...", expanded=True) as status:
+    with st.status("🔍 市場大數據掃描中...", expanded=True) as status:
         final_list, scan_title = execute_engine(current_cats, current_pats, input_sid, max_limit, min_vol_val)
         
         if final_list:
             st.subheader(scan_title)
-            # 表格化顯示
+            # 顯示表格
             table_data = []
             for item in final_list:
                 badges = " ".join([f'<span class="badge {"badge-tri" if "三角" in l else "badge-vol" if "爆量" in l else "badge-box"}">{l}</span>' for l in item['labels']])
@@ -241,18 +245,28 @@ if run_search or auto_toggle or input_sid:
                 })
             st.write(pd.DataFrame(table_data).to_html(escape=False, index=False), unsafe_allow_html=True)
 
-            # K線圖顯示
+            # 顯示 K 線圖
+            st.divider()
             for item in final_list:
-                with st.expander(f"📊 {item['sid']} {item['name']} 詳情"):
+                with st.expander(f"📊 {item['sid']} {item['name']} - 形態細節"):
                     d, (sh, ih, sl, il) = item['df'], item['lines']
                     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05)
+                    
+                    # 蠟燭圖
                     fig.add_trace(go.Candlestick(x=d.index, open=d['Open'], high=d['High'], low=d['Low'], close=d['Close']), row=1, col=1)
+                    
+                    # 壓力支撐線
                     xv = np.arange(len(d))
                     fig.add_trace(go.Scatter(x=d.index, y=sh * xv + ih, line=dict(color='red', width=2, dash='dash')), row=1, col=1)
                     fig.add_trace(go.Scatter(x=d.index, y=sl * xv + il, line=dict(color='green', width=2, dash='dot')), row=1, col=1)
+                    
+                    # 成交量
                     fig.add_trace(go.Bar(x=d.index, y=d['Volume'], marker_color='blue', opacity=0.4), row=2, col=1)
-                    fig.update_layout(height=450, template="plotly_white", xaxis_rangeslider_visible=False, showlegend=False)
-                    st.plotly_chart(fig, use_container_width=True)
+                    
+                    fig.update_layout(height=450, template="plotly_white", xaxis_rangeslider_visible=False, showlegend=False, margin=dict(l=10,r=10,t=10,b=10))
+                    
+                    # 關鍵修正：加上唯一 key 防止 Duplicate ID 錯誤
+                    st.plotly_chart(fig, use_container_width=True, key=f"plotly_{item['sid']}")
         else:
-            st.info("未發現符合形態的個股，請調整篩選條件。")
-        status.update(label=f"✅ 完成！發現 {len(final_list)} 檔標的", state="complete")
+            st.info("目前的條件下未發現符合的個股，請調整篩選門檻。")
+        status.update(label=f"✅ 掃描完成！發現 {len(final_list)} 檔標的", state="complete")
