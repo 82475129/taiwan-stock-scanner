@@ -19,13 +19,11 @@ if "current_mode" not in st.session_state:
 @st.cache_data(ttl=3600)
 def load_db():
     DB_FILE = "taiwan_electronic_stocks.json"
-    # 預設資料庫
     base = {"2330.TW": "台積電", "2454.TW": "聯發科", "2317.TW": "鴻海", "2481.TW": "強茂", "2352.TW": "佳世達"}
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                # ✨ 關鍵修正：自動解析字典格式，避免顯示 {'name': '...'}
                 return {k: (v['name'] if isinstance(v, dict) else v) for k, v in data.items()}
         except: return base
     return base
@@ -36,7 +34,7 @@ def get_stock_data(sid):
         df = yf.download(sid, period="45d", progress=False)
         if df.empty: return pd.DataFrame()
         if isinstance(df.columns, pd.MultiIndex): df.columns = df.columns.get_level_values(0)
-        df = df.loc[:, ~df.columns.duplicated()] # 預防 yfinance 重複欄位報錯
+        df = df.loc[:, ~df.columns.duplicated()]
         return df[["Open", "High", "Low", "Close", "Volume"]].dropna()
     except: return pd.DataFrame()
 
@@ -66,43 +64,30 @@ st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
 
 st.markdown("""
 <style>
-    /* 全域字體優化 */
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;500;700&display=swap');
     html, body, [class*="css"] { font-family: 'Noto Sans TC', sans-serif; background-color: #f8f9fa; }
-    
-    /* 標題區塊 */
+
     .title-container { text-align: center; padding: 30px 0; background: #ffffff; border-bottom: 1px solid #e9ecef; margin-bottom: 30px; }
     .main-title { font-size: 28px; font-weight: 700; color: #212529; margin-bottom: 5px; letter-spacing: 1px; }
     .sub-title { font-size: 13px; color: #adb5bd; font-weight: 300; letter-spacing: 3px; text-transform: uppercase; }
-    
-    /* 極簡卡片 */
-    .stock-card { 
-        background: white; padding: 20px; border-radius: 10px; 
-        border: 1px solid #edf2f7; margin-bottom: 15px; 
-        transition: all 0.2s ease;
-    }
+
+    .stock-card { background: white; padding: 20px; border-radius: 10px; border: 1px solid #edf2f7; margin-bottom: 15px; transition: all 0.2s ease; }
     .stock-card:hover { border-color: #cbd5e0; box-shadow: 0 4px 12px rgba(0,0,0,0.03); }
     .card-id { font-size: 19px; font-weight: 700; color: #4a5568; text-decoration: none; }
     .card-id:hover { color: #667eea; }
     .card-vol { float: right; font-size: 14px; color: #a0aec0; font-weight: 500; background: #f7fafc; padding: 2px 8px; border-radius: 4px; }
-    
-    /* 標籤樣式 */
-    .badge { 
-        display: inline-block; padding: 4px 10px; border-radius: 5px; 
-        font-size: 12px; font-weight: 600; margin-right: 8px; margin-top: 12px; 
-        color: white; 
-    }
-    .bg-pattern { background: #667eea; } /* 科技藍 */
-    .bg-vol { background: #f56565; }    /* 警示紅 */
+
+    .badge { display: inline-block; padding: 4px 10px; border-radius: 5px; font-size: 12px; font-weight: 600; margin-right: 8px; margin-top: 12px; color: white; }
+    .bg-pattern { background: #667eea; }
+    .bg-vol { background: #f56565; }
     .bg-none { background: #edf2f7; color: #a0aec0; }
 </style>
 """, unsafe_allow_html=True)
 
-# 渲染標題
 st.markdown('<div class="title-container"><div class="main-title">🎯 台股 Pro-X 形態大師</div><div class="sub-title">Advanced Technical Analysis System</div></div>', unsafe_allow_html=True)
 
 # ==========================================
-# 3. 側邊欄控制 (左側介面絕對不動)
+# 3. 側邊欄控制
 # ==========================================
 db = load_db()
 modes = ["⚡ 今日即時監控 (自動)", "⏳ 歷史形態搜尋 (手動)", "🌐 顯示所有股票連結"]
@@ -112,7 +97,7 @@ with st.sidebar:
     mode = st.radio("功能模式", modes, index=modes.index(st.session_state.current_mode))
     st.session_state.current_mode = mode
     st.divider()
-    
+
     if "自動" in mode:
         st_autorefresh(interval=300000, key="auto")
         conf = {"tri": st.checkbox("📐 三角收斂", True), "box": st.checkbox("📦 旗箱整理", True), "vol": st.checkbox("🚀 今日爆量", True)}
@@ -123,26 +108,52 @@ with st.sidebar:
         conf = {"tri": st.checkbox("📐 三角收斂", True), "box": st.checkbox("📦 旗箱整理", True), "vol": st.checkbox("🚀 今日爆量", True)}
         min_v = 0
         run = st.button("🚀 開始分析", use_container_width=True)
-    else: run = False
+    else:
+        run = False
 
 # ==========================================
-# 4. 邏輯與介面渲染
+# 4. 顯示股票資料或連結
 # ==========================================
 if mode == "🌐 顯示所有股票連結":
-    st.info("💡 點擊下方連結可直接跳轉至 Yahoo 股市頁面")
-    cols = st.columns(3)
-    for i, (sid, name) in enumerate(db.items()):
-        cols[i % 3].markdown(f"· [{sid.split('.')[0]} {name}](https://tw.stock.yahoo.com/quote/{sid.split('.')[0]})")
+    st.info("💡 點擊下方卡片可直接跳轉至 Yahoo 股市頁面")
+
+    # 依股票代號前兩碼分類 (23xx, 24xx, ...)
+    categories = {}
+    for sid, name in db.items():
+        cat = sid[:2] + "xx"
+        if cat not in categories:
+            categories[cat] = []
+        categories[cat].append((sid, name))
+
+    for cat, stocks in sorted(categories.items()):
+        with st.expander(f"📂 {cat} 類股票 ({len(stocks)} 檔)"):
+            cols = st.columns(3)
+            for i, (sid, name) in enumerate(sorted(stocks, key=lambda x: x[0])):
+                col = cols[i % 3]
+                col.markdown(f"""
+                <div style="
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    color: white;
+                    padding: 10px 15px;
+                    border-radius: 10px;
+                    margin-bottom: 8px;
+                    box-shadow: 0 4px 8px rgba(0,0,0,0.1);
+                    transition: transform 0.2s;
+                " onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
+                    <a href="https://tw.stock.yahoo.com/quote/{sid.split('.')[0]}" target="_blank" style="color: white; font-weight:600; text-decoration:none;">
+                        {sid.split('.')[0]} {name} 🔗
+                    </a>
+                </div>
+                """, unsafe_allow_html=True)
 
 elif run:
     is_manual = ("手動" in mode and sid_in.strip() != "")
     if is_manual:
-        # 手動輸入時檢查兩大交易所
-        targets = [(f"{sid_in.upper()}.TW", db.get(f"{sid_in.upper()}.TW", "搜尋標的")), 
+        targets = [(f"{sid_in.upper()}.TW", db.get(f"{sid_in.upper()}.TW", "搜尋標的")),
                    (f"{sid_in.upper()}.TWO", db.get(f"{sid_in.upper()}.TWO", "搜尋標的"))]
     else:
         targets = list(db.items())
-    
+
     results = []
     with concurrent.futures.ThreadPoolExecutor(max_workers=10) as exe:
         futures = {exe.submit(get_stock_data, s): (s, n) for s, n in targets}
@@ -154,7 +165,6 @@ elif run:
                 res.update({"sid": s, "name": n, "df": df})
                 results.append(res)
 
-    # 排序：標籤越多排越前面
     results.sort(key=lambda x: len(x["labels"]), reverse=True)
 
     if not results:
@@ -162,10 +172,9 @@ elif run:
 
     for item in results:
         clean_sid = item['sid'].split('.')[0]
-        # 卡片渲染
         badge_html = ' '.join([f'<span class="badge {"bg-vol" if "爆量" in t else "bg-pattern"}">{t}</span>' for t in item['labels']])
         if not badge_html: badge_html = '<span class="badge bg-none">🔘 一般走勢</span>'
-        
+
         st.markdown(f"""
         <div class="stock-card">
             <span class="card-vol">成交量 {item['vol']} 張</span>
@@ -173,16 +182,15 @@ elif run:
             {badge_html}
         </div>
         """, unsafe_allow_html=True)
-        
+
         with st.expander("📈 展開技術形態圖表"):
             d = item["df"].tail(30)
             sh, ih, sl, il, x_reg = item["lines"]
             fig = make_subplots(rows=1, cols=1)
             fig.add_candlestick(x=d.index, open=d["Open"], high=d["High"], low=d["Low"], close=d["Close"], name="K線")
-            # 趨勢參考線
             p = d.tail(15)
-            fig.add_scatter(x=p.index, y=sh * x_reg + ih, line=dict(dash="dash", color="#f56565", width=1.5), name="阻力")
-            fig.add_scatter(x=p.index, y=sl * x_reg + il, line=dict(dash="dash", color="#667eea", width=1.5), name="支撐")
+            fig.add_scatter(x=p.index, y=sh * np.arange(len(p)) + ih, line=dict(dash="dash", color="#f56565", width=1.5), name="阻力")
+            fig.add_scatter(x=p.index, y=sl * np.arange(len(p)) + il, line=dict(dash="dash", color="#667eea", width=1.5), name="支撐")
             fig.update_layout(
                 height=400, xaxis_rangeslider_visible=False, showlegend=False,
                 margin=dict(t=10, b=10, l=10, r=10),
