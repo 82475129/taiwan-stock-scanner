@@ -89,7 +89,7 @@ def load_db():
 
 
 # ==========================================
-# 3. 形態分析演算法
+# 3. 形態分析演算法（分開判斷）
 # ==========================================
 def _analyze_pattern_logic(df):
     try:
@@ -103,16 +103,15 @@ def _analyze_pattern_logic(df):
         is_tri = (sh < -0.0008) and (sl > 0.0008)
         is_box = (abs(sh) < 0.0006) and (abs(sl) < 0.0006)
         vol_mean = v[-10:-1].mean() if len(v) > 10 else v.mean()
-        is_vol = v[-1] > (vol_mean * 1.6)
+        is_vol = v[-1] > (vol_mean * 1.4)  # 放寬門檻，提高穩定性
 
-        is_near_tri = (sh < -0.0004) and (sl > 0.0004) and not is_tri
-        if is_near_tri: labels.append("📐 接近三角")
         if is_tri: labels.append("📐 三角收斂")
         if is_box: labels.append("📦 旗箱矩形")
         if is_vol: labels.append("🚀 爆量突破")
 
         return labels, (sh, ih, sl, il), is_tri, is_box, is_vol
-    except:
+    except Exception as e:
+        st.warning(f"形態分析錯誤：{str(e)}")
         return [], (0, 0, 0, 0), False, False, False
 
 
@@ -182,7 +181,7 @@ with st.sidebar:
 
 
 # ==========================================
-# 7. 分析引擎（標題動態調整）
+# 7. 分析引擎（分開判斷 + 動態標題）
 # ==========================================
 def execute_engine(is_auto_mode):
     if is_auto_mode:
@@ -197,7 +196,7 @@ def execute_engine(is_auto_mode):
         return [], "🔍 形態掃描結果"
 
     with st.status("🔍 分析引擎運作中...", expanded=True) as status:
-        db = load_db()  # 自動載入/更新 DB
+        db = load_db()
         results = []
 
         if input_sid:
@@ -219,7 +218,12 @@ def execute_engine(is_auto_mode):
                 if not input_sid and v_now < min_vol_threshold:
                     return None
                 labels, lines, i_tri, i_bx, i_vo = _analyze_pattern_logic(df)
-                match = input_sid or (pats['tri'] and i_tri) or (pats['box'] and i_bx) or (pats['vol'] and i_vo)
+                # 分開判斷：只加符合勾選的標籤
+                match = False
+                if pats.get('tri') and i_tri: match = True
+                if pats.get('box') and i_bx: match = True
+                if pats.get('vol') and i_vo: match = True
+                if input_sid: match = True  # 手動輸入一定顯示
                 if match:
                     return {
                         "sid": sid,
@@ -242,12 +246,12 @@ def execute_engine(is_auto_mode):
                 if res:
                     results.append(res)
 
-        # 動態標題
-        if pats.get('vol'):
+        # 動態標題（根據勾選決定）
+        if pats.get('vol') and not pats.get('tri') and not pats.get('box'):
             title = "🔍 爆量突破掃描結果"
-        elif pats.get('tri'):
+        elif pats.get('tri') and not pats.get('vol') and not pats.get('box'):
             title = "🔍 三角收斂掃描結果"
-        elif pats.get('box'):
+        elif pats.get('box') and not pats.get('tri') and not pats.get('vol'):
             title = "🔍 旗箱矩形掃描結果"
         else:
             title = "🔍 形態掃描結果"
@@ -257,7 +261,7 @@ def execute_engine(is_auto_mode):
 
 
 # ==========================================
-# 8. 渲染結果（標題動態 + 連結可點擊）
+# 8. 渲染結果
 # ==========================================
 final_list = []
 scan_title = "🔍 形態掃描結果"
@@ -285,7 +289,7 @@ if final_list:
         })
 
     df_table = pd.DataFrame(table_data)
-    st.subheader(scan_title)  # 使用動態標題
+    st.subheader(scan_title)
     st.markdown(df_table.to_markdown(index=False), unsafe_allow_html=True)
 
     st.subheader("📊 個股 K 線圖")
