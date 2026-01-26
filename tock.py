@@ -1,4 +1,4 @@
-import streamlit as st
+Import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
@@ -7,55 +7,43 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 from scipy.stats import linregress
 from streamlit_autorefresh import st_autorefresh
+from datetime import datetime
+import json
 import os
 
 # ==========================================
-# 0. 系統核心設定與導航鎖定
+# 0. 狀態鎖定與資料庫 (解決返回鍵跳頁問題)
 # ==========================================
-st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
-
 if 'current_mode' not in st.session_state:
     st.session_state.current_mode = "⚡ 今日即時監控 (自動)"
 
-# 預設電子標的資料庫
-DEFAULT_DB = {
-    "2330.TW": "台積電", "2454.TW": "聯發科", "3025.TW": "星通", 
-    "3406.TW": "玉晶光", "2498.TW": "宏達電", "2317.TW": "鴻海", "3045.TW": "台灣大"
-}
+DB_FILE = "taiwan_electronic_stocks.json"
 
-# ==========================================
-# 1. 精準數據抓取 (解決股價錯誤關鍵)
-# ==========================================
-@st.cache_data(ttl=300)
-def get_clean_stock_data(sid):
-    try:
-        ticker = yf.Ticker(sid)
-        # 抓取 60 天歷史 K 線
-        df = ticker.history(period="60d", interval="1d")
-        if df.empty: return None
-        
-        # 強制從 fast_info 抓取盤中最新價，若失敗則取 Close 最後一筆
+@st.cache_data(ttl=3600)
+def load_full_db():
+    base_list = {"2330.TW": "台積電", "2454.TW": "聯發科", "3025.TW": "星通", 
+                 "3406.TW": "玉晶光", "2498.TW": "宏達電", "2317.TW": "鴻海", "3045.TW": "台灣大"}
+    if os.path.exists(DB_FILE):
         try:
-            current_price = float(ticker.fast_info['last_price'])
-        except:
-            current_price = float(df['Close'].iloc[-1])
-            
-        return {"df": df.dropna(), "price": current_price}
-    except:
-        return None
+            with open(DB_FILE, 'r', encoding='utf-8') as f: return json.load(f)
+        except: return base_list
+    return base_list
+
+@st.cache_data(ttl=300)
+def get_stock_data(sid):
+    try: 
+        df = yf.download(sid, period="45d", progress=False)
+        return df.dropna() if not df.empty else pd.DataFrame()
+    except: return pd.DataFrame()
 
 # ==========================================
-# 2. 形態演算法 (三角/期箱/爆量)
+# 1. 形態核心演算法 (精準 15 天連線)
 # ==========================================
-def analyze_patterns(data_obj, config, days=15):
-    if not data_obj or data_obj['df'].empty or len(data_obj['df']) < days: return None
-    df = data_obj['df']
+def analyze_patterns(df, config, days=15):
+    if df is None or df.empty or len(df) < days: return None
     try:
         d = df.tail(days).copy()
-        h = d['High'].values.flatten().astype(float)
-        l = d['Low'].values.flatten().astype(float)
-        v = d['Volume'].values.flatten().astype(float)
-        
+        h, l, v = d['High'].values.flatten().astype(float), d['Low'].values.flatten().astype(float), d['Volume'].values.flatten().astype(float)
         x = np.arange(len(h))
         sh, ih, _, _, _ = linregress(x, h) 
         sl, il, _, _, _ = linregress(x, l) 
@@ -73,109 +61,156 @@ def analyze_patterns(data_obj, config, days=15):
             hits.append({"text": "🚀今日爆量", "class": "badge-vol"})
         
         return {
-            "labels": hits, "lines": (sh, ih, sl, il, x), 
-            "price": data_obj['price'], "vol": int(v[-1]//1000)
+            "labels": hits, 
+            "lines": (sh, ih, sl, il, x), 
+            "price": round(float(df['Close'].iloc[-1]), 2), 
+            "vol": int(v[-1]//1000)
         }
     except: return None
 
 # ==========================================
-# 3. 手機版 UI 樣式優化
+# 2. 手機版專屬樣式 (解決排版與色彩辨識)
 # ==========================================
+st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
 st.markdown("""
     <style>
-    .stApp { background-color: #f8f9fa; }
+    .stApp { background-color: #f4f7f6; }
+    /* 卡片設計 */
     .stock-card {
-        background: white; padding: 18px; border-radius: 15px;
-        margin-bottom: 15px; border-left: 8px solid #6c5ce7;
-        box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        background: white; padding: 16px; border-radius: 12px;
+        margin-bottom: 15px; border-left: 6px solid #6c5ce7;
+        box-shadow: 0 4px 10px rgba(0,0,0,0.06);
     }
-    .card-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
-    .sid-title { font-size: 1.2rem; font-weight: bold; color: #2d3436; }
-    .price { color: #d63031; font-weight: 900; font-size: 1.4rem; }
-    .badge { padding: 5px 12px; border-radius: 8px; font-size: 0.8rem; font-weight: bold; margin-right: 5px; color: white; }
+    .card-row { display: flex; justify-content: space-between; align-items: center; margin-bottom: 6px; }
+    .sid-link { font-size: 1.1rem; font-weight: bold; color: #6c5ce7; text-decoration: none; }
+    .price { color: #d63031; font-weight: 800; font-size: 1.2rem; }
+    
+    /* 形態色彩標籤 */
+    .badge { padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: bold; margin: 2px; color: white; display: inline-block; }
     .badge-tri { background-color: #6c5ce7; } /* 紫色 */
-    .badge-box { background-color: #636e72; } /* 灰色 */
+    .badge-box { background-color: #2d3436; } /* 灰色 */
     .badge-vol { background-color: #d63031; } /* 紅色 */
     .badge-none { background-color: #b2bec3; }
+    
+    /* 連結模式按鈕 (優化返回體驗) */
     .link-item {
-        display: block; background: white; border: 1px solid #dfe6e9; padding: 15px;
-        margin-bottom: 10px; border-radius: 12px; text-decoration: none; color: #2d3436;
-        font-weight: 600; text-align: center;
+        display: block; background: white; border: 1px solid #e0e0e0; padding: 15px;
+        margin-bottom: 8px; border-radius: 10px; text-decoration: none; color: #333;
+        font-weight: 500; text-align: center; box-shadow: 0 2px 4px rgba(0,0,0,0.03);
     }
+    .link-item:active { background: #f0f0f0; }
+    .link-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
     </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 4. 導航與功能邏輯
+# 3. 側邊欄：模式切換
 # ==========================================
+db = load_full_db()
 modes = ["⚡ 今日即時監控 (自動)", "⏳ 歷史形態搜尋 (手動)", "🌐 顯示所有股票連結"]
+
 with st.sidebar:
-    st.title("🎯 形態大師 Pro")
-    st.session_state.current_mode = st.radio("功能模式", modes, index=modes.index(st.session_state.current_mode))
+    st.title("🎯 形態大師控制台")
+    selected_mode = st.radio(
+        "選擇功能模式", 
+        modes, 
+        index=modes.index(st.session_state.current_mode)
+    )
+    st.session_state.current_mode = selected_mode # 存入狀態
     st.divider()
     
-    if "今日" in st.session_state.current_mode:
-        st_autorefresh(interval=300000)
-        config = {'tri': st.checkbox("📐 三角收斂", True), 'box': st.checkbox("📦 旗箱整理", True), 'vol': st.checkbox("🚀 今日爆量", True)}
-        min_v = st.number_input("最低量 (張)", 300)
-        run = True
-    elif "歷史" in st.session_state.current_mode:
-        h_sid = st.text_input("輸入個股代號", "2330").strip().upper()
-        config = {'tri': True, 'box': True, 'vol': True}
-        run = st.button("🚀 執行搜尋", type="primary", use_container_width=True)
+    if selected_mode == "⚡ 今日即時監控 (自動)":
+        st_autorefresh(interval=300000, key="auto_refresh")
+        st.subheader("📡 今日自動監控")
+        t_tri = st.checkbox("📐 三角收斂", value=True)
+        t_box = st.checkbox("📦 旗箱整理", value=True)
+        t_vol = st.checkbox("🚀 今日爆量", value=True)
+        t_min_v = st.number_input("最低量 (張)", value=300)
+        current_config = {'tri': t_tri, 'box': t_box, 'vol': t_vol}
+        run_now = True
+    elif selected_mode == "⏳ 歷史形態搜尋 (手動)":
+        st.subheader("⏳ 搜尋指定標的")
+        h_sid = st.text_input("代號 (輸入即強制顯示圖表)", placeholder="2330")
+        h_tri = st.checkbox("📐 三角收斂", value=True)
+        h_box = st.checkbox("📦 旗箱整理", value=True)
+        h_vol = st.checkbox("🚀 今日爆量", value=True)
+        h_min_v = st.number_input("最低量 (張)", value=100)
+        current_config = {'tri': h_tri, 'box': h_box, 'vol': h_vol}
+        run_now = st.button("🚀 開始掃描", type="primary", use_container_width=True)
     else:
-        run = False
+        run_now = False
 
 # ==========================================
-# 5. 渲染頁面
+# 4. 模式渲染：連結列表、監控、搜尋
 # ==========================================
+
+# 模式三：顯示所有股票連結 (優化返回機制)
 if st.session_state.current_mode == "🌐 顯示所有股票連結":
-    st.subheader("🌐 股市快速跳轉")
-    st.markdown('<div style="display:grid; grid-template-columns:1fr 1fr; gap:10px;">'
-                '<a class="link-item" href="https://tw.stock.yahoo.com" target="_blank">Yahoo 股市</a>'
-                '<a class="link-item" href="https://www.wantgoo.com" target="_blank">玩股網</a>'
-                '</div>', unsafe_allow_html=True)
+    st.subheader("🌐 常用股市工具")
+    st.markdown("""
+    <div class="link-grid">
+        <a class="link-item" href="https://tw.stock.yahoo.com" target="_blank">📉 Yahoo 股市</a>
+        <a class="link-item" href="https://www.wantgoo.com" target="_blank">📈 玩股網</a>
+        <a class="link-item" href="https://www.tradingview.com" target="_blank">📊 TradingView</a>
+        <a class="link-item" href="https://goodinfo.tw" target="_blank">📒 Goodinfo</a>
+    </div>
+    """, unsafe_allow_html=True)
     st.divider()
-    for sid, name in DEFAULT_DB.items():
-        st.markdown(f'<a href="https://tw.stock.yahoo.com/quote/{sid.split(".")[0]}" target="_blank" class="link-item">🔗 {sid} {name}</a>', unsafe_allow_html=True)
+    st.subheader("📑 電子股快速連結")
+    for sid, name in db.items():
+        clean_id = sid.split('.')[0]
+        s_name = name if isinstance(name, str) else name.get('name', '個股')
+        url = f"https://tw.stock.yahoo.com/quote/{clean_id}"
+        # 使用 HTML 標籤確保返回時瀏覽器狀態不變
+        st.markdown(f'<a href="{url}" target="_blank" class="link-item">{clean_id} {s_name}</a>', unsafe_allow_html=True)
 
-elif run:
-    targets = [(f"{h_sid}.TW", "個股"), (f"{h_sid}.TWO", "個股")] if "歷史" in st.session_state.current_mode else list(DEFAULT_DB.items())
+# 模式一 & 二：分析顯示
+elif run_now:
+    st.subheader(f"🔍 {st.session_state.current_mode}")
+    is_specific = bool(st.session_state.current_mode == "⏳ 歷史形態搜尋 (手動)" and h_sid)
+    targets = [(f"{h_sid.upper()}.TW", "個股"), (f"{h_sid.upper()}.TWO", "個股")] if is_specific else list(db.items())[:150]
+    mv_limit = t_min_v if "今日" in st.session_state.current_mode else h_min_v
     
-    results = []
-    with concurrent.futures.ThreadPoolExecutor(max_workers=5) as ex:
-        futs = {ex.submit(get_clean_stock_data, s): (s, n) for s, n in targets}
-        for f in concurrent.futures.as_completed(futs):
-            s, n = futs[f]
-            data = f.result()
-            res = analyze_patterns(data, config)
-            if res:
-                # 搜尋模式強制顯示；監控模式需過濾形態
-                if ("歷史" in st.session_state.current_mode) or (res['labels'] and res['vol'] >= min_v):
-                    res.update({"sid": s, "name": n, "df": data['df']})
-                    results.append(res)
+    final_results = []
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = {executor.submit(get_stock_data, s): (s, info) for s, info in targets}
+        for f in concurrent.futures.as_completed(futures):
+            sid, info = futures[f]
+            df_stock = f.result()
+            res = analyze_patterns(df_stock, current_config)
+            if res and (is_specific or (res['labels'] and res['vol'] >= mv_limit)):
+                res.update({"sid": sid, "name": info if isinstance(info, str) else info.get('name', '個股'), "df": df_stock})
+                final_results.append(res)
 
-    if not results: st.warning("未找到匹配標的。")
-    for item in results:
-        b_html = "".join([f'<span class="badge {l["class"]}">{l["text"]}</span>' for l in item['labels']]) or '<span class="badge badge-none">🔘 一般走勢</span>'
+    for item in final_results:
+        clean_id = item['sid'].split('.')[0]
+        # 標籤色彩處理
+        b_html = "".join([f'<span class="badge {l["class"]}">{l["text"]}</span>' for l in item['labels']]) if item['labels'] else '<span class="badge badge-none">🔘 一般走勢</span>'
+        
+        # 卡片呈現
         st.markdown(f"""
             <div class="stock-card">
                 <div class="card-row">
-                    <span class="sid-title">🔗 <a href="https://tw.stock.yahoo.com/quote/{item['sid'].split('.')[0]}" target="_blank" style="text-decoration:none; color:#6c5ce7;">{item['sid']}</a></span>
-                    <span style="color:#636e72; font-weight:bold;">{item['name']}</span>
+                    <a class="sid-link" href="https://tw.stock.yahoo.com/quote/{clean_id}" target="_blank">🔗 {item['sid']}</a>
+                    <span class="s-name">{item['name']}</span>
                 </div>
                 <div class="card-row">
-                    <span style="font-size:0.9rem; color:#636e72;">量: <b>{item['vol']:,} 張</b></span>
-                    <span class="price">${item['price']:,.1f}</span>
+                    <span style="color:#666; font-size:0.9rem;">成交量: <b>{item['vol']} 張</b></span>
+                    <span class="price">${item['price']}</span>
                 </div>
-                <div style="margin-top:10px;">{b_html}</div>
+                <div>{b_html}</div>
             </div>
         """, unsafe_allow_html=True)
-        with st.expander("📈 展開 K 線圖分析"):
-            df_p = item['df'].tail(30); sh, ih, sl, il, x_r = item['lines']
+        
+        with st.expander("📈 展開形態圖表"):
+            d_p = item['df'].tail(30); sh, ih, sl, il, x_r = item['lines']
             fig = make_subplots(rows=1, cols=1)
-            fig.add_trace(go.Candlestick(x=df_p.index, open=df_p['Open'], high=df_p['High'], low=df_p['Low'], close=df_p['Close'], name="K"))
-            fig.add_trace(go.Scatter(x=df_p.tail(15).index, y=sh*x_r+ih, line=dict(color='#ff4757', width=2, dash='dash')))
-            fig.add_trace(go.Scatter(x=df_p.tail(15).index, y=sl*x_r+il, line=dict(color='#2ed573', width=2, dash='dot')))
-            fig.update_layout(height=350, margin=dict(l=0,r=0,t=0,b=0), xaxis_rangeslider_visible=False, template="plotly_white", showlegend=False)
+            fig.add_trace(go.Candlestick(x=d_p.index, open=d_p['Open'], high=d_p['High'], low=d_p['Low'], close=d_p['Close'], name="K"))
+            # 趨勢線
+            p_d = d_p.tail(15)
+            fig.add_trace(go.Scatter(x=p_d.index, y=sh*x_r+ih, line=dict(color='#ff4757', width=3, dash='dash')))
+            fig.add_trace(go.Scatter(x=p_d.index, y=sl*x_r+il, line=dict(color='#2ed573', width=3, dash='dot')))
+            fig.update_layout(height=400, margin=dict(l=5,r=5,t=5,b=5), xaxis_rangeslider_visible=False, template="plotly_white", showlegend=False)
             st.plotly_chart(fig, use_container_width=True, key=f"fig_{item['sid']}")
+else:
+    st.info("👈 請由側邊欄切換模式")
