@@ -1,0 +1,32 @@
+name: 自動更新電子股資料庫 JSON
+
+on:
+  schedule:
+    - cron: '0 0 * * *'
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  update-db:
+    runs-on: ubuntu-latest
+    # ⚡ 必須有這段，Actions 才能把真實數據推回你的 Repo
+    permissions:
+      contents: write
+      
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: 安裝依賴
+      run: pip install requests beautifulsoup4 tqdm
+    - name: 執行更新
+      run: python generate_db.py
+    - name: Commit & Push
+      run: |
+        git config --global user.name "github-actions[bot]"
+        git config --global user.email "github-actions[bot]@users.noreply.github.com"
+        git add taiwan_electronic_stocks.json
+        git commit -m "自動更新電子股 JSON" || exit 0
+        git push
