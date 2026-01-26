@@ -9,7 +9,7 @@ from bs4 import BeautifulSoup
 import json, os, requests, time
 
 # ==========================================
-# 0. 資料載入與多分類爬蟲邏輯 (擴充版)
+# 0. 資料載入與多分類爬蟲邏輯
 # ==========================================
 DB_FILE = "taiwan_electronic_stocks.json"
 
@@ -18,19 +18,15 @@ def update_json_database():
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     new_db = {}
     
-    # 1. 自動生成分類網址：涵蓋電子、半導體、電腦、光電、通信、零組件等
-    # 上市電子類股 ID 通常在 24~31 以及 40~47 之間
+    # 自動生成分類網址：上市(TAI) 24-31, 40-47；上櫃(TWO) 153-160
     sector_ids = [2, 7, 24, 25, 26, 27, 28, 29, 30, 31] + list(range(40, 48))
     urls = [f"https://tw.stock.yahoo.com/class-quote?sectorId={sid}&exchange=TAI" for sid in sector_ids]
     
-    # 2. 加入上櫃電子類股 (通常 ID 較大，如 153~160)
     otc_ids = list(range(153, 161))
     urls += [f"https://tw.stock.yahoo.com/class-quote?sectorId={sid}&exchange=TWO" for sid in otc_ids]
     
-    # 3. 加入特定集團股
+    # 集團股
     urls.append("https://tw.stock.yahoo.com/class-quote?category=%E4%B8%AD%E5%A4%A9%E7%94%9F%E6%8A%80&categoryLabel=%E9%9B%86%E5%9C%98%E8%82%A1")
-
-    st_placeholder = st.empty() if 'st' in globals() else None
 
     for url in urls:
         try:
@@ -42,7 +38,7 @@ def update_json_database():
                 code_el = row.select_one('span.Fz\(14px\)')
                 if name_el and code_el:
                     new_db[code_el.text.strip()] = name_el.text.strip()
-            time.sleep(0.3) # 稍微加快速度
+            time.sleep(0.2) 
         except: continue
         
     with open(DB_FILE, 'w', encoding='utf-8') as f:
@@ -58,10 +54,11 @@ def get_full_stock_list():
             return json.load(f)
     except: return {}
 
+# 載入資料庫
 db = get_full_stock_list()
 
 # ==========================================
-# 1. 形態分析引擎 (維持原樣)
+# 1. 形態分析引擎
 # ==========================================
 def analyze_patterns(df, config, days=15):
     if df is None or len(df) < 30: return None
@@ -87,43 +84,50 @@ def analyze_patterns(df, config, days=15):
     except: return None
 
 # ==========================================
-# 2. 介面設計 (維持原樣)
+# 2. 介面設計 (僅在 Streamlit 環境執行)
 # ==========================================
-st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
-st.markdown("""<style>.stApp { background-color: #f4f7f6; }.stock-card { background: white; padding: 20px; border-radius: 12px; margin-bottom: 20px; border-left: 8px solid #6c5ce7; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }.badge { padding: 4px 10px; border-radius: 6px; font-size: 0.8rem; font-weight: bold; margin-right: 5px; color: white; }.badge-tri { background-color: #6c5ce7; }.badge-box { background-color: #2d3436; }.badge-vol { background-color: #d63031; }</style>""", unsafe_allow_html=True)
+# 初始化 run 變數為 False，防止指令模式執行
+run = False 
 
-with st.sidebar:
-    st.title("🎯 形態大師控制台")
-    if st.button("🔄 同步全電子產業清單"):
-        with st.spinner("正在掃描數百檔股票..."):
-            db = update_json_database()
-            st.cache_data.clear()
-            st.success("同步完成！")
+# 檢查是否在 Streamlit 運行環境
+try:
+    st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
+    st.markdown("""<style>.stApp { background-color: #f4f7f6; }.stock-card { background: white; padding: 20px; border-radius: 12px; margin-bottom: 20px; border-left: 8px solid #6c5ce7; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }.badge { padding: 4px 10px; border-radius: 6px; font-size: 0.8rem; font-weight: bold; margin-right: 5px; color: white; }.badge-tri { background-color: #6c5ce7; }.badge-box { background-color: #2d3436; }.badge-vol { background-color: #d63031; }</style>""", unsafe_allow_html=True)
 
-    st.info(f"📁 已載入：{len(db)} 檔標的")
-    mode = st.radio("功能模式", ["⚡ 即時監控", "⏳ 歷史搜尋"])
-    st.divider()
-    
-    if "⚡" in mode:
-        st_autorefresh(interval=300000, key="auto_refresh")
-        f_ma = st.checkbox("股價在 MA20 之上", value=True)
-        t_tri = st.checkbox("📐 三角收斂", value=True)
-        t_box = st.checkbox("📦 旗箱整理", value=True)
-        t_vol = st.checkbox("🚀 今日爆量", value=True)
-        t_min_v = st.number_input("最低成交量(張)", value=500)
-        config = {'tri': t_tri, 'box': t_box, 'vol': t_vol, 'use_ma': f_ma}
-        run = True
-    else:
-        h_sid = st.text_input("輸入股票代號")
-        config = {'tri': True, 'box': True, 'vol': True, 'use_ma': False}
-        run = st.button("🚀 開始掃描", type="primary")
+    with st.sidebar:
+        st.title("🎯 形態大師控制台")
+        if st.button("🔄 同步全產業清單"):
+            with st.spinner("掃描中..."):
+                db = update_json_database()
+                st.cache_data.clear()
+                st.success("同步完成！")
+
+        st.info(f"📁 已載入：{len(db)} 檔標的")
+        mode = st.radio("功能模式", ["⚡ 即時監控", "⏳ 歷史搜尋"])
+        st.divider()
+        
+        if "⚡" in mode:
+            st_autorefresh(interval=300000, key="auto_refresh")
+            f_ma = st.checkbox("股價在 MA20 之上", value=True)
+            t_tri = st.checkbox("📐 三角收斂", value=True)
+            t_box = st.checkbox("📦 旗箱整理", value=True)
+            t_vol = st.checkbox("🚀 今日爆量", value=True)
+            t_min_v = st.number_input("最低成交量(張)", value=500)
+            config = {'tri': t_tri, 'box': t_box, 'vol': t_vol, 'use_ma': f_ma}
+            run = True
+        else:
+            h_sid = st.text_input("輸入股票代號")
+            config = {'tri': True, 'box': True, 'vol': True, 'use_ma': False}
+            run = st.button("🚀 開始掃描", type="primary")
+except:
+    # 如果不在 Streamlit 環境，上面的代碼會出錯並跳到這裡
+    pass
 
 # ==========================================
-# 3. 掃描與結果 (使用 st.status)
+# 3. 掃描與結果 (只有在網頁點擊 run 才執行)
 # ==========================================
-st.title("台股 Pro-X 形態大師")
-
-if run and db:
+if run:
+    st.title("台股 Pro-X 形態大師")
     if "⏳" in mode and h_sid:
         s_code = h_sid.upper()
         if not s_code.endswith((".TW", ".TWO")): s_code = f"{s_code}.TW"
@@ -133,9 +137,9 @@ if run and db:
         
     final_results = []
     
-    with st.status(f"🔍 正在深度掃描 {len(targets)} 檔形態...", expanded=True) as status:
+    with st.status(f"🔍 正在掃描 {len(targets)} 檔形態...", expanded=True) as status:
         p_bar = st.progress(0)
-        chunk_size = 30 # 稍微縮小 chunk 增加穩定性
+        chunk_size = 30
         
         for i in range(0, len(targets), chunk_size):
             p_bar.progress(min(i / len(targets), 1.0))
@@ -155,7 +159,7 @@ if run and db:
                     except: continue
             except: continue
         p_bar.empty()
-        status.update(label=f"✅ 掃描完成！找到 {len(final_results)} 檔標的", state="complete", expanded=False)
+        status.update(label=f"✅ 找到 {len(final_results)} 檔符合標的", state="complete", expanded=False)
 
     if final_results:
         for item in final_results:
@@ -173,6 +177,11 @@ if run and db:
     else:
         st.info("💡 目前無符合形態的股票。")
 
-# --- 結尾：供 GitHub Actions 執行爬蟲 ---
+# ==========================================
+# 4. GitHub Actions 專用入口
+# ==========================================
 if __name__ == "__main__":
+    # 當 GitHub 執行 python tock.py 時
+    print("🚀 [GitHub Actions] 啟動自動化更新...")
     update_json_database()
+    print("✅ [GitHub Actions] 資料庫更新成功！")
