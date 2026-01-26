@@ -9,46 +9,69 @@ from bs4 import BeautifulSoup
 import json, os, requests, time
 
 # ==========================================
-# 檢查運行環境：最穩定的判斷方式
+# 檢查運行環境
 # ==========================================
-# 檢查執行指令中是否包含 streamlit
 IS_STREAMLIT = "streamlit" in sys.argv[0] or any("streamlit" in arg for arg in sys.argv)
 
 # ==========================================
-# 0. 資料載入與多分類爬蟲邏輯
+# 0. 全產業資料庫爬蟲 (目標 1500+ 檔)
 # ==========================================
 DB_FILE = "taiwan_electronic_stocks.json"
 
 def update_json_database():
-    """擴充網址清單，抓取數百檔電子相關股票"""
+    """抓取 Yahoo 財經所有產業分類，達成全台股覆蓋"""
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     new_db = {}
     
-    # 上市(TAI) & 上櫃(TWO) 電子類股
-    sector_ids = [2, 7, 24, 25, 26, 27, 28, 29, 30, 31] + list(range(40, 48))
-    urls = [f"https://tw.stock.yahoo.com/class-quote?sectorId={sid}&exchange=TAI" for sid in sector_ids]
-    otc_ids = list(range(153, 161))
-    urls += [f"https://tw.stock.yahoo.com/class-quote?sectorId={sid}&exchange=TWO" for sid in otc_ids]
-    urls.append("https://tw.stock.yahoo.com/class-quote?category=%E4%B8%AD%E5%A4%A9%E7%94%9F%E6%8A%80&categoryLabel=%E9%9B%86%E5%9C%98%E8%82%A1")
-
-    for url in urls:
-        try:
-            resp = requests.get(url, headers=headers, timeout=10)
-            soup = BeautifulSoup(resp.text, 'html.parser')
-            rows = soup.select('li.List\(n\)')
-            for row in rows:
-                name_el = row.select_one('div.Lh\(20px\)')
-                code_el = row.select_one('span.Fz\(14px\)')
-                if name_el and code_el:
-                    new_db[code_el.text.strip()] = name_el.text.strip()
-            time.sleep(0.1) 
-        except: continue
-        
+    # 掃描範圍：上市 ID (2~47), 上櫃 ID (65~165)
+    # 這涵蓋了台股 99% 的產業分類
+    sector_ranges = [
+        {"exchange": "TAI", "ids": list(range(2, 48))},
+        {"exchange": "TWO", "ids": list(range(65, 166))}
+    ]
+    
+    print("📡 開始全產業掃描...")
+    
+    for item in sector_ranges:
+        exch = item["exchange"]
+        for sid in item["ids"]:
+            url = f"https://tw.stock.yahoo.com/class-quote?sectorId={sid}&exchange={exch}"
+            try:
+                resp = requests.get(url, headers=headers, timeout=10)
+                if resp.status_code != 200: continue
+                
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                rows = soup.select('li.List\(n\)')
+                
+                if not rows: continue
+                
+                counter = 0
+                for row in rows:
+                    name_el = row.select_one('div.Lh\(20px\)')
+                    code_el = row.select_one('span.Fz\(14px\)')
+                    if name_el and code_el:
+                        code = code_el.text.strip()
+                        # 格式化為 yfinance 代號
+                        suffix = ".TW" if exch == "TAI" else ".TWO"
+                        full_code = f"{code}{suffix}"
+                        new_db[full_code] = name_el.text.strip()
+                        counter += 1
+                
+                # 僅列印有抓到資料的類股以節省日誌空間
+                if counter > 0:
+                    print(f"✅ {exch} 類股 ID {sid}: 抓取 {counter} 檔")
+                
+                time.sleep(0.05) # 稍微快一點，因為數量龐大
+            except:
+                continue
+    
+    # 儲存結果
     with open(DB_FILE, 'w', encoding='utf-8') as f:
         json.dump(new_db, f, ensure_ascii=False, indent=2)
+    
+    print(f"🏁 掃描結束，總計：{len(new_db)} 檔股票")
     return new_db
 
-# 只有在需要時才載入資料 (Actions 或 Streamlit)
 def load_db():
     if not os.path.exists(DB_FILE):
         return update_json_database()
@@ -58,7 +81,7 @@ def load_db():
     except: return {}
 
 # ==========================================
-# 1. 形態分析引擎
+# 1. 形態分析引擎 (維持高效運算)
 # ==========================================
 def analyze_patterns(df, config, days=15):
     if df is None or len(df) < 30: return None
@@ -85,20 +108,19 @@ def analyze_patterns(df, config, days=15):
     except: return None
 
 # ==========================================
-# 2. 執行邏輯分流
+# 2. 執行分流邏輯
 # ==========================================
 if IS_STREAMLIT:
-    # --- 這裡只有網頁版會跑 ---
     from streamlit_autorefresh import st_autorefresh
     db = load_db()
     
-    st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
+    st.set_page_config(page_title="台股全產業形態掃描器", layout="wide")
     st.markdown("""<style>.stApp { background-color: #f4f7f6; }.stock-card { background: white; padding: 20px; border-radius: 12px; margin-bottom: 20px; border-left: 8px solid #6c5ce7; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }.badge { padding: 4px 10px; border-radius: 6px; font-size: 0.8rem; font-weight: bold; margin-right: 5px; color: white; }.badge-tri { background-color: #6c5ce7; }.badge-box { background-color: #2d3436; }.badge-vol { background-color: #d63031; }</style>""", unsafe_allow_html=True)
 
     with st.sidebar:
-        st.title("🎯 形態大師控制台")
-        if st.button("🔄 同步全產業清單"):
-            with st.spinner("掃描中..."):
+        st.title("🎯 全產業掃描控制台")
+        if st.button("🔄 同步全台股清單 (1500+)"):
+            with st.spinner("深度掃描各產業中..."):
                 db = update_json_database()
                 st.cache_data.clear()
                 st.success("同步完成！")
@@ -113,30 +135,32 @@ if IS_STREAMLIT:
             t_tri = st.checkbox("📐 三角收斂", value=True)
             t_box = st.checkbox("📦 旗箱整理", value=True)
             t_vol = st.checkbox("🚀 今日爆量", value=True)
-            t_min_v = st.number_input("最低成交量(張)", value=500)
+            t_min_v = st.number_input("最低成交量(張)", value=1000)
             config = {'tri': t_tri, 'box': t_box, 'vol': t_vol, 'use_ma': f_ma}
             run = True
         else:
-            h_sid = st.text_input("輸入股票代號")
+            h_sid = st.text_input("輸入股票代號 (如 2330)")
             config = {'tri': True, 'box': True, 'vol': True, 'use_ma': False}
             run = st.button("🚀 開始掃描", type="primary")
 
     if run:
-        st.title("台股 Pro-X 形態大師")
+        st.title("台股形態分析結果")
         targets = []
         if "⏳" in mode and h_sid:
-            s_code = h_sid.upper()
-            if not s_code.endswith((".TW", ".TWO")): s_code = f"{s_code}.TW"
-            targets = [(s_code, db.get(s_code, h_sid.upper()))]
+            code = h_sid.upper()
+            target_list = [c for c in db.keys() if code in c]
+            targets = [(c, db[c]) for c in target_list]
         else:
             targets = list(db.items())
             
         final_results = []
-        with st.status(f"🔍 正在掃描 {len(targets)} 檔形態...", expanded=True) as status:
+        with st.status(f"🔍 正在篩選 {len(targets)} 檔形態...", expanded=True) as status:
             p_bar = st.progress(0)
-            for i in range(0, len(targets), 30):
+            # 由於標的變多，chunk_size 稍微調大以加快速度
+            chunk_size = 40 
+            for i in range(0, len(targets), chunk_size):
                 p_bar.progress(min(i / len(targets), 1.0))
-                chunk = targets[i : i + 30]
+                chunk = targets[i : i + chunk_size]
                 t_list = [t[0] for t in chunk]
                 try:
                     data = yf.download(t_list, period="2mo", group_by='ticker', progress=False)
@@ -151,7 +175,7 @@ if IS_STREAMLIT:
                         except: continue
                 except: continue
             p_bar.empty()
-            status.update(label=f"✅ 找到 {len(final_results)} 檔符合標的", state="complete", expanded=False)
+            status.update(label=f"✅ 找到 {len(final_results)} 檔形態符合標的", state="complete", expanded=False)
 
         if final_results:
             for item in final_results:
@@ -167,11 +191,9 @@ if IS_STREAMLIT:
                     fig.update_layout(height=400, template="plotly_white", showlegend=False, xaxis_rangeslider_visible=False)
                     st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("💡 目前無符合形態的股票。")
+            st.info("💡 暫無符合形態的股票，建議調整成交量門檻。")
 
 else:
-    # --- 這裡只有 GitHub Actions (純 Python) 會跑 ---
+    # --- GitHub Actions 專用 ---
     if __name__ == "__main__":
-        print("🚀 [GitHub Actions] 偵測到純指令環境，開始更新資料庫...")
         update_json_database()
-        print("✅ [GitHub Actions] 資料庫 JSON 更新完成！")
