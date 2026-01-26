@@ -2,7 +2,6 @@ import streamlit as st
 import pandas as pd
 import yfinance as yf
 import plotly.graph_objects as go
-from plotly.subplots import make_subplots
 import json
 import os
 from streamlit_autorefresh import st_autorefresh
@@ -26,9 +25,9 @@ def load_organized_db():
     return organized
 
 @st.cache_data(ttl=300)
-def get_full_stock_data(sid):
+def get_k_line_data(sid):
     try:
-        # 抓取包含 Open, High, Low, Close, Volume 的完整數據
+        # 只抓取價格數據
         df = yf.download(sid, period="45d", progress=False)
         if df.empty: return None
         if isinstance(df.columns, pd.MultiIndex): 
@@ -37,61 +36,66 @@ def get_full_stock_data(sid):
     except: return None
 
 # ==========================================
-# 1. 介面美化 CSS (鎖定左側 + 專業卡片)
+# 1. 專業介面 CSS (比照你截圖的高級質感)
 # ==========================================
 st.set_page_config(page_title="Pro-X 形態大師", layout="wide")
 
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@400;700&display=swap');
-    html, body, [class*="css"] { font-family: 'Noto Sans TC', sans-serif; background-color: #fcfcfc; }
+    html, body, [class*="css"] { font-family: 'Noto Sans TC', sans-serif; background-color: #f8fafc; }
 
     /* 固定左側邊欄 */
-    section[data-testid="stSidebar"] { background-color: #ffffff !important; border-right: 2px solid #f1f5f9; }
+    section[data-testid="stSidebar"] { background-color: #ffffff !important; border-right: 2px solid #eef2f6; }
 
-    /* 分類大標題 */
+    /* 分類大標題樣式 (專業紫色側條) */
     .sector-header {
-        font-size: 24px; font-weight: 700; color: #0f172a;
+        font-size: 24px; font-weight: 700; color: #1e293b;
         background: white; padding: 15px 25px; border-radius: 12px;
         margin: 30px 0 15px 0; border-left: 10px solid #6366f1;
-        box-shadow: 0 4px 6px -1px rgba(0,0,0,0.05);
+        box-shadow: 0 4px 6px rgba(0,0,0,0.05);
     }
 
-    /* 專業卡片樣式 */
+    /* 股票卡片美化 */
     .stock-card {
-        background: white; padding: 25px; border-radius: 18px;
-        border: 1px solid #e2e8f0; margin-bottom: 20px;
-        transition: all 0.3s ease;
+        background: white; padding: 25px; border-radius: 20px;
+        border: 1px solid #e2e8f0; margin-bottom: 10px;
+        transition: all 0.2s ease;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.02);
     }
-    .stock-card:hover { transform: translateY(-4px); border-color: #6366f1; box-shadow: 0 12px 20px rgba(99, 102, 241, 0.1); }
+    .stock-card:hover { transform: translateY(-3px); border-color: #6366f1; }
     
-    .stock-title { font-size: 20px; font-weight: 700; color: #4338ca; text-decoration: none; }
+    .stock-title { font-size: 22px; font-weight: 700; color: #4338ca; text-decoration: none; }
+    
+    /* 標籤樣式 (紅/紫) */
+    .tag-red { background: #fee2e2; color: #dc2626; padding: 4px 12px; border-radius: 8px; font-size: 13px; font-weight: 700; }
+    .tag-purple { background: #f3e8ff; color: #7e22ce; padding: 4px 12px; border-radius: 8px; font-size: 13px; font-weight: 700; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 側邊欄控制中心 (固定在左邊)
+# 2. 側邊欄控制中心 (左邊介面固定不動)
 # ==========================================
 db_groups = load_organized_db()
 
 with st.sidebar:
-    st.markdown("<h2 style='color:#6366f1;'>PRO-X 控制台</h2>", unsafe_allow_html=True)
+    st.markdown("<h1 style='color:#6366f1;'>PRO-X 控制台</h1>", unsafe_allow_html=True)
     st.divider()
     
-    search_q = st.text_input("🔍 快速搜尋代號", placeholder="輸入代號...")
+    search_q = st.text_input("🔍 快速過濾代號", placeholder="輸入代號...")
     
     st.divider()
-    st.markdown("### ⚙️ 系統維護")
+    st.markdown("### ⚙️ 系統設定")
     st_autorefresh(interval=600000, key="fixed_nav")
     
-    if st.button("🔄 刷新快取數據"):
+    if st.button("🔄 刷新數據"):
         st.cache_data.clear()
         st.rerun()
 
 # ==========================================
-# 3. 主畫面：K 線 + 成交量雙層圖表
+# 3. 主畫面：純 K 線圖表 (拿掉成交量)
 # ==========================================
-st.markdown("<h2 style='text-align:center;'>🎯 智能分組監控終端</h2>", unsafe_allow_html=True)
+st.markdown("<h2 style='text-align:center;'>🚀 智能個股監控終端</h2>", unsafe_allow_html=True)
 
 final_groups = {}
 if search_q:
@@ -105,7 +109,7 @@ if not final_groups:
     st.info("💡 找不到符合條件的股票。")
 else:
     for category, stocks in final_groups.items():
-        st.markdown(f'<div class="sector-header">📁 {category}板塊</div>', unsafe_allow_html=True)
+        st.markdown(f'<div class="sector-header">📂 {category}板塊</div>', unsafe_allow_html=True)
         
         cols = st.columns(2)
         for i, (sid, name) in enumerate(stocks.items()):
@@ -116,37 +120,24 @@ else:
                         <a class="stock-title" href="https://tw.stock.yahoo.com/quote/{sid.split('.')[0]}" target="_blank">
                             🔗 {sid.split('.')[0]} {name}
                         </a>
-                        <span style="background:#f1f5f9; color:#6366f1; padding:4px 10px; border-radius:8px; font-size:12px; font-weight:700;">監視中</span>
+                        <span class="tag-red">🚀 今日爆量</span>
                     </div>
                 </div>
                 """, unsafe_allow_html=True)
                 
-                with st.expander("📈 查看完整 K 線與成交量"):
-                    df = get_full_stock_data(sid)
+                with st.expander("📈 展開形態圖表"):
+                    df = get_k_line_data(sid)
                     if df is not None:
-                        # 建立子圖：第一行畫 K 線 (70%高度)，第二行畫成交量 (30%高度)
-                        fig = make_subplots(rows=2, cols=1, shared_xaxes=True, 
-                                           vertical_spacing=0.05, row_heights=[0.7, 0.3])
-
-                        # 1. K 線圖
-                        fig.add_trace(go.Candlestick(
+                        # 只有一個圖層，且完全拿掉成交量數據
+                        fig = go.Figure(data=[go.Candlestick(
                             x=df.index, open=df['Open'], high=df['High'], 
-                            low=df['Low'], close=df['Close'], name="K線"
-                        ), row=1, col=1)
-
-                        # 2. 成交量 (Volume) - 根據漲跌自動上色
-                        colors = ['#ef4444' if row['Close'] >= row['Open'] else '#22c55e' for _, row in df.iterrows()]
-                        fig.add_trace(go.Bar(
-                            x=df.index, y=df['Volume'], name="成交量",
-                            marker_color=colors, opacity=0.8
-                        ), row=2, col=1)
-
+                            low=df['Low'], close=df['Close']
+                        )])
                         fig.update_layout(
-                            height=500, margin=dict(t=10, b=10, l=10, r=10),
+                            height=350, margin=dict(t=10, b=10, l=10, r=10),
                             xaxis_rangeslider_visible=False,
-                            showlegend=False,
                             paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="#f8fafc"
                         )
                         st.plotly_chart(fig, use_container_width=True, key=f"f_{sid}")
                     else:
-                        st.warning("數據獲取超時")
+                        st.warning("暫無價格數據")
