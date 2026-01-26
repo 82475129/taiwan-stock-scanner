@@ -89,7 +89,7 @@ def load_db():
 
 
 # ==========================================
-# 3. 形態分析演算法（分開判斷）
+# 3. 形態分析演算法（完全分開）
 # ==========================================
 def _analyze_pattern_logic(df):
     try:
@@ -105,6 +105,7 @@ def _analyze_pattern_logic(df):
         vol_mean = v[-10:-1].mean() if len(v) > 10 else v.mean()
         is_vol = v[-1] > (vol_mean * 1.4)  # 放寬門檻，提高穩定性
 
+        # 這裡不混加標籤，之後在 worker 裡根據勾選決定要不要顯示
         if is_tri: labels.append("📐 三角收斂")
         if is_box: labels.append("📦 旗箱矩形")
         if is_vol: labels.append("🚀 爆量突破")
@@ -181,7 +182,7 @@ with st.sidebar:
 
 
 # ==========================================
-# 7. 分析引擎（分開判斷 + 動態標題）
+# 7. 分析引擎（完全分開 + 動態標題）
 # ==========================================
 def execute_engine(is_auto_mode):
     if is_auto_mode:
@@ -218,20 +219,24 @@ def execute_engine(is_auto_mode):
                 if not input_sid and v_now < min_vol_threshold:
                     return None
                 labels, lines, i_tri, i_bx, i_vo = _analyze_pattern_logic(df)
-                # 分開判斷：只加符合勾選的標籤
-                match = False
-                if pats.get('tri') and i_tri: match = True
-                if pats.get('box') and i_bx: match = True
-                if pats.get('vol') and i_vo: match = True
-                if input_sid: match = True  # 手動輸入一定顯示
-                if match:
+                # 只加勾選的標籤（完全分開）
+                selected_labels = []
+                if pats.get('tri') and i_tri:
+                    selected_labels.append("📐 三角收斂")
+                if pats.get('box') and i_bx:
+                    selected_labels.append("📦 旗箱矩形")
+                if pats.get('vol') and i_vo:
+                    selected_labels.append("🚀 爆量突破")
+                if input_sid:  # 手動輸入一定顯示所有
+                    selected_labels = labels
+                if selected_labels:
                     return {
                         "sid": sid,
                         "name": info['name'],
                         "cat": info['category'],
                         "df": df.tail(50),
                         "lines": lines,
-                        "labels": labels,
+                        "labels": selected_labels,
                         "price": float(df['Close'].iloc[-1]),
                         "vol": v_now
                     }
