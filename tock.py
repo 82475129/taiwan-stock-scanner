@@ -4,7 +4,7 @@ import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 from scipy.stats import linregress
-import sys, json, os
+import sys, json, os, datetime
 
 # ==========================================
 # 0. 系統基礎設定
@@ -40,9 +40,8 @@ def run_analysis(df, sid, name, config):
 
         d_len = 15
         x = np.arange(d_len)
-
-        h = df["High"].iloc[-d_len:].values.astype(float)
-        l = df["Low"].iloc[-d_len:].values.astype(float)
+        h = df["High"].iloc[-d_len:].astype(float).values
+        l = df["Low"].iloc[-d_len:].astype(float).values
 
         sh, ih, _, _, _ = linregress(x, h)
         sl, il, _, _, _ = linregress(x, l)
@@ -71,7 +70,7 @@ def run_analysis(df, sid, name, config):
         return None
 
 # ==========================================
-# 1. UI
+# UI
 # ==========================================
 db = load_db()
 
@@ -81,10 +80,10 @@ with st.sidebar:
     st.divider()
 
     st.subheader("形態過濾設定")
-    f_tri = st.checkbox("📐 三角收斂", value=False)
-    f_box = st.checkbox("📦 箱型整理", value=False)
-    f_vol = st.checkbox("🚀 今日爆量", value=False)
-    f_ma20 = st.checkbox("📈 股價 > MA20", value=False)
+    f_tri = st.checkbox("📐 三角收斂", False)
+    f_box = st.checkbox("📦 箱型整理", False)
+    f_vol = st.checkbox("🚀 今日爆量", False)
+    f_ma20 = st.checkbox("📈 股價 > MA20", False)
 
     config = {
         "f_tri": f_tri,
@@ -104,98 +103,131 @@ with st.sidebar:
         run_btn = st.button("🔍 執行分析", type="primary", use_container_width=True)
 
 # ==========================================
-# 2. 主畫面
+# 主畫面
 # ==========================================
 if mode == "⚡ 自動全市場監控":
     st.header("⚡ 市場形態雷達")
 
     if run_btn:
         if not any([f_tri, f_box, f_vol]):
-            st.warning("請至少勾選一種形態再掃描")
-        else:
-            all_codes = list(db.keys())
+            st.warning("請至少勾選一種形態")
+            st.stop()
 
-            with st.status("🔍 掃描中...", expanded=True) as status:
-                v_data = yf.download(
-                    all_codes, period="1d", progress=False, threads=True
-                )["Volume"]
+        # ===== 非交易時段提示 =====
+        now = datetime.datetime.now()
+        if now.hour < 9 or now.hour > 14:
+            st.info("📴 非台股交易時段，成交量可能不完整")
 
-                latest_v = (v_data.iloc[-1] / 1000).dropna()
-                targets = (
-                    latest_v[latest_v >= min_v]
-                    .sort_values(ascending=False)
-                    .head(scan_limit)
-                    .index.tolist()
+        all_codes = list(db.keys())
+
+        with st.status("🔍 掃描中...", expanded=True) as status:
+
+            # ===== 成交量抓取（防炸）=====
+            v_raw = yf.download(
+                all_codes,
+                period="5d",          # ← 關鍵：避免假日炸
+                progress=False,
+                threads=True,
+            )
+
+            if v_raw.empty or "Volume" not in v_raw:
+                st.error("❌ 無法取得成交量資料（假日或 Yahoo API 異常）")
+                st.stop()
+
+            v_data = v_raw["Volume"].dropna(how="all")
+
+            if len(v_data) == 0:
+                st.error("❌ 成交量資料為空")
+                st.stop()
+
+            latest_v = (v_data.iloc[-1] / 1000).dropna()
+
+            targets = (
+                latest_v[latest_v >= min_v]
+                .sort_values(ascending=False)
+                .head(scan_limit)
+                .index.tolist()
+            )
+
+            if not targets:
+                st.warning("⚠️ 無符合成交量門檻標的")
+                st.stop()
+
+            # ===== 歷史資料 =====
+            h_data = yf.download(
+                targets,
+                period="3mo",
+                group_by="ticker",
+                progress=False,
+                threads=True,
+            )
+
+            results = []
+            for sid in targets:
+                if sid not in h_data:
+                    continue
+                res = run_analysis(
+                    h_data[sid].dropna(),
+                    sid,
+                    db.get(sid, ""),
+                    config,
+                )
+                if res:
+                    results.append(res)
+
+            status.update(
+                label=f"✅ 完成！找到 {len(results)} 檔符合條件",
+                state="complete",
+            )
+
+        # ===== 顯示結果 =====
+        for item in results:
+            with st.expander(f"{item['sid']} {item['name']}", expanded=True):
+                st.write(
+                    f"現價：{item['price']} ｜ 形態：{', '.join(item['hits'])}"
                 )
 
-                h_data = yf.download(
-                    targets, period="3mo", group_by="ticker", progress=False, threads=True
+                df = item["df"]
+                sh, ih, sl, il, x = item["lines"]
+                df_t = df.iloc[-len(x):]
+
+                fig = go.Figure()
+
+                fig.add_candlestick(
+                    x=df_t.index,
+                    open=df_t["Open"],
+                    high=df_t["High"],
+                    low=df_t["Low"],
+                    close=df_t["Close"],
+                    name="K線",
                 )
 
-                results = []
-
-                for sid in targets:
-                    if sid not in h_data:
-                        continue
-                    res = run_analysis(
-                        h_data[sid].dropna(), sid, db.get(sid, ""), config
-                    )
-                    if res:
-                        results.append(res)
-
-                status.update(
-                    label=f"✅ 完成！找到 {len(results)} 檔符合條件",
-                    state="complete",
+                fig.add_scatter(
+                    x=df_t.index,
+                    y=sh * x + ih,
+                    mode="lines",
+                    name="高點趨勢",
+                )
+                fig.add_scatter(
+                    x=df_t.index,
+                    y=sl * x + il,
+                    mode="lines",
+                    name="低點趨勢",
                 )
 
-            # ===== 顯示結果 =====
-            for item in results:
-                with st.expander(f"{item['sid']} {item['name']}", expanded=True):
-                    st.write(
-                        f"現價：{item['price']} ｜ 形態：{', '.join(item['hits'])}"
-                    )
+                fig.update_layout(
+                    height=420,
+                    xaxis_rangeslider_visible=False,
+                    margin=dict(l=10, r=10, t=30, b=10),
+                )
 
-                    df = item["df"]
-                    sh, ih, sl, il, x = item["lines"]
-                    df_t = df.iloc[-len(x):]
-
-                    fig = go.Figure()
-
-                    fig.add_candlestick(
-                        x=df_t.index,
-                        open=df_t["Open"],
-                        high=df_t["High"],
-                        low=df_t["Low"],
-                        close=df_t["Close"],
-                        name="K線",
-                    )
-
-                    fig.add_scatter(
-                        x=df_t.index,
-                        y=sh * x + ih,
-                        mode="lines",
-                        name="高點趨勢",
-                    )
-                    fig.add_scatter(
-                        x=df_t.index,
-                        y=sl * x + il,
-                        mode="lines",
-                        name="低點趨勢",
-                    )
-
-                    fig.update_layout(
-                        height=420,
-                        margin=dict(l=10, r=10, t=30, b=10),
-                        xaxis_rangeslider_visible=False,
-                    )
-
-                    st.plotly_chart(fig, use_container_width=True)
+                st.plotly_chart(fig, use_container_width=True)
 
     else:
         st.info("👈 勾選形態後，點擊「啟動掃描」")
 
 # ==========================================
-# 3. 手動模式（簡版）
+# 手動模式
 # ==========================================
 else:
     if run_btn and sid_input:
