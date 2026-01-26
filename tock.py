@@ -9,21 +9,28 @@ from bs4 import BeautifulSoup
 import json, os, requests, time
 
 # ==========================================
-# 0. 真實數據載入與自動爬蟲邏輯 (新增合併部分)
+# 0. 資料載入與多分類爬蟲邏輯 (擴充版)
 # ==========================================
 DB_FILE = "taiwan_electronic_stocks.json"
 
 def update_json_database():
-    """整合多個 Yahoo 網址並生成 JSON 資料庫"""
-    # 這裡可以自由增加你要的網址 (sectorId 或 category 格式皆可)
-    urls = [
-        "https://tw.stock.yahoo.com/class-quote?sectorId=2&exchange=TAI", # 食品
-        "https://tw.stock.yahoo.com/class-quote?sectorId=7&exchange=TAI", # 電機
-        "https://tw.stock.yahoo.com/class-quote?category=%E4%B8%AD%E5%A4%A9%E7%94%9F%E6%8A%80&categoryLabel=%E9%9B%86%E5%9C%98%E8%82%A1"
-    ]
-    
+    """擴充網址清單，抓取數百檔電子相關股票"""
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     new_db = {}
+    
+    # 1. 自動生成分類網址：涵蓋電子、半導體、電腦、光電、通信、零組件等
+    # 上市電子類股 ID 通常在 24~31 以及 40~47 之間
+    sector_ids = [2, 7, 24, 25, 26, 27, 28, 29, 30, 31] + list(range(40, 48))
+    urls = [f"https://tw.stock.yahoo.com/class-quote?sectorId={sid}&exchange=TAI" for sid in sector_ids]
+    
+    # 2. 加入上櫃電子類股 (通常 ID 較大，如 153~160)
+    otc_ids = list(range(153, 161))
+    urls += [f"https://tw.stock.yahoo.com/class-quote?sectorId={sid}&exchange=TWO" for sid in otc_ids]
+    
+    # 3. 加入特定集團股
+    urls.append("https://tw.stock.yahoo.com/class-quote?category=%E4%B8%AD%E5%A4%A9%E7%94%9F%E6%8A%80&categoryLabel=%E9%9B%86%E5%9C%98%E8%82%A1")
+
+    st_placeholder = st.empty() if 'st' in globals() else None
 
     for url in urls:
         try:
@@ -35,7 +42,7 @@ def update_json_database():
                 code_el = row.select_one('span.Fz\(14px\)')
                 if name_el and code_el:
                     new_db[code_el.text.strip()] = name_el.text.strip()
-            time.sleep(0.5)
+            time.sleep(0.3) # 稍微加快速度
         except: continue
         
     with open(DB_FILE, 'w', encoding='utf-8') as f:
@@ -44,16 +51,12 @@ def update_json_database():
 
 @st.cache_data(show_spinner=False)
 def get_full_stock_list():
-    # 如果檔案不存在，先跑一次爬蟲
     if not os.path.exists(DB_FILE):
         return update_json_database()
-    
     try:
         with open(DB_FILE, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            return data if data else {}
-    except:
-        return {}
+            return json.load(f)
+    except: return {}
 
 db = get_full_stock_list()
 
@@ -91,18 +94,13 @@ st.markdown("""<style>.stApp { background-color: #f4f7f6; }.stock-card { backgro
 
 with st.sidebar:
     st.title("🎯 形態大師控制台")
-    
-    # 新增一個手動更新按鈕
-    if st.button("🔄 同步網頁最新清單"):
-        db = update_json_database()
-        st.success("已完成多網址同步！")
-        st.cache_data.clear()
+    if st.button("🔄 同步全電子產業清單"):
+        with st.spinner("正在掃描數百檔股票..."):
+            db = update_json_database()
+            st.cache_data.clear()
+            st.success("同步完成！")
 
-    if not db:
-        st.error("⚠️ 無真實數據！請點擊上方按鈕執行爬蟲。")
-    else:
-        st.success(f"📁 已載入：{len(db)} 檔標的")
-    
+    st.info(f"📁 已載入：{len(db)} 檔標的")
     mode = st.radio("功能模式", ["⚡ 即時監控", "⏳ 歷史搜尋"])
     st.divider()
     
@@ -121,25 +119,23 @@ with st.sidebar:
         run = st.button("🚀 開始掃描", type="primary")
 
 # ==========================================
-# 3. 掃描與結果 (邏輯微調以相容搜尋代碼)
+# 3. 掃描與結果 (使用 st.status)
 # ==========================================
 st.title("台股 Pro-X 形態大師")
 
 if run and db:
-    # 搜尋模式代碼處理
     if "⏳" in mode and h_sid:
         s_code = h_sid.upper()
-        if not s_code.endswith((".TW", ".TWO")):
-            s_code = f"{s_code}.TW"
+        if not s_code.endswith((".TW", ".TWO")): s_code = f"{s_code}.TW"
         targets = [(s_code, db.get(s_code, h_sid.upper()))]
     else:
         targets = list(db.items())
         
     final_results = []
     
-    with st.status("🔍 市場形態深度掃描中...", expanded=True) as status:
+    with st.status(f"🔍 正在深度掃描 {len(targets)} 檔形態...", expanded=True) as status:
         p_bar = st.progress(0)
-        chunk_size = 40
+        chunk_size = 30 # 稍微縮小 chunk 增加穩定性
         
         for i in range(0, len(targets), chunk_size):
             p_bar.progress(min(i / len(targets), 1.0))
@@ -147,13 +143,11 @@ if run and db:
             t_list = [t[0] for t in chunk]
             
             try:
-                # 下載數據，考慮到單檔搜尋與多檔批次的結構差異
                 data = yf.download(t_list, period="2mo", group_by='ticker', progress=False)
                 for sid, name in chunk:
                     try:
                         df_s = data[sid].dropna() if len(t_list) > 1 else data.dropna()
                         if df_s.empty: continue
-                        
                         res = analyze_patterns(df_s, config)
                         if res and (not "⚡" in mode or res['vol'] >= t_min_v):
                             res.update({"sid": sid, "name": name, "df": df_s})
@@ -179,8 +173,6 @@ if run and db:
     else:
         st.info("💡 目前無符合形態的股票。")
 
-# ... 保持你原本的所有程式碼不變 ...
-
+# --- 結尾：供 GitHub Actions 執行爬蟲 ---
 if __name__ == "__main__":
-    # 當 GitHub Actions 執行 python tock.py 時會跑這裡
     update_json_database()
