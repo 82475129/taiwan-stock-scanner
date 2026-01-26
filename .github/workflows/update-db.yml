@@ -24,24 +24,15 @@ jobs:
       run: |
         pip install requests beautifulsoup4 tqdm pandas yfinance scipy plotly streamlit streamlit-autorefresh
 
-    - name: 執行更新 (執行合併後的爬蟲邏輯)
+    - name: 執行更新
       run: |
-        # 透過 python 指令直接執行 stock.py 內的 update_json_database 函式
-        python -c "from stock import update_json_database; update_json_database()"
-
-    - name: 驗證 JSON 檔案 (避免空檔案推送)
-      run: |
-        if [ -s taiwan_electronic_stocks.json ]; then
-          echo "✅ JSON 生成成功且不為空"
-        else
-          echo "❌ 錯誤：JSON 檔案不存在或為空"
-          exit 1
-        fi
+        # 關鍵點：執行檔名必須完全匹配 tock.py
+        python tock.py
 
     - name: Commit & Push
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         git add taiwan_electronic_stocks.json
-        git commit -m "更新最新股價資料庫 (自動更新)" || exit 0
+        git commit -m "更新最新股價資料庫 (由 tock.py 觸發)" || exit 0
         git push
