@@ -20,11 +20,12 @@ DB_FILE = "taiwan_electronic_stocks.json"
 
 @st.cache_data(ttl=3600)
 def load_full_db():
+    # 預設範例資料
     base = {
-        "2330.TW": "台積電",
-        "2454.TW": "聯發科",
-        "2317.TW": "鴻海",
-        "3045.TW": "台灣大"
+        "2330.TW": {"name": "台積電", "cat": "電子"},
+        "2454.TW": {"name": "聯發科", "cat": "電子"},
+        "2317.TW": {"name": "鴻海", "cat": "電子"},
+        "3045.TW": {"name": "台灣大", "cat": "電子"}
     }
     if os.path.exists(DB_FILE):
         try:
@@ -37,17 +38,12 @@ def load_full_db():
 @st.cache_data(ttl=300)
 def get_stock_data(sid):
     try:
-        # 下載資料
         df = yf.download(sid, period="45d", progress=False)
-        if df.empty:
-            return pd.DataFrame()
-        
-        # ✨ 關鍵修正：處理 yfinance 的 MultiIndex 欄位問題
+        if df.empty: return pd.DataFrame()
+        # 處理 yfinance 新版 MultiIndex
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
-            
-        df = df.dropna()
-        return df
+        return df.dropna()
     except:
         return pd.DataFrame()
 
@@ -57,43 +53,30 @@ def get_stock_data(sid):
 def analyze_patterns(df, config, days=15):
     if df is None or df.empty or len(df) < days:
         return None
-
-    # 取得最近 N 天資料並確保為 1D array
     d = df.tail(days)
     try:
         h = d["High"].values.flatten().astype(float)
         l = d["Low"].values.flatten().astype(float)
         v = d["Volume"].values.flatten().astype(float)
-        c = d["Close"].values.flatten().astype(float)
         x = np.arange(len(h))
-
-        # 線性回歸計算趨勢線
         sh, ih, *_ = linregress(x, h)
         sl, il, *_ = linregress(x, l)
-    except (ValueError, KeyError):
-        # 捕捉數據不足或回歸失敗（x 座標相同等問題）
+    except:
         return None
 
     v_mean = np.mean(v[:-1]) if len(v) >= 2 else np.mean(v)
     hits = []
-
-    # 1. 三角收斂：高點下降 & 低點上升
     if config.get("tri") and sh < -0.003 and sl > 0.003:
         hits.append({"text": "📐三角收斂", "class": "badge-tri"})
-
-    # 2. 旗箱整理：上下軌趨於水平
     if config.get("box") and abs(sh) < 0.03 and abs(sl) < 0.03:
         hits.append({"text": "📦旗箱整理", "class": "badge-box"})
-
-    # 3. 今日爆量：今日成交量 > 均量 1.3 倍
     if config.get("vol") and v[-1] > v_mean * 1.3:
         hits.append({"text": "🚀今日爆量", "class": "badge-vol"})
 
     return {
         "labels": hits,
         "lines": (sh, ih, sl, il, x),
-        "price": round(float(c[-1]), 2),
-        "vol": int(v[-1] // 1000),
+        "vol": int(v[-1] // 1000)
     }
 
 # ==========================================
@@ -104,13 +87,14 @@ st.markdown("""
 <style>
 .stApp { background-color: #f4f7f6; }
 .stock-card {
-    background: white; padding: 16px; border-radius: 12px;
-    margin-bottom: 15px; border-left: 6px solid #6c5ce7;
+    background: white; padding: 18px; border-radius: 12px;
+    margin-bottom: 12px; border-left: 6px solid #6c5ce7;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.05);
 }
-.card-row { display:flex; justify-content:space-between; margin-bottom:6px; }
-.sid-link { font-weight:bold; color:#6c5ce7; text-decoration:none; }
-.price { color:#d63031; font-size:1.2rem; font-weight:800; }
-.badge { padding:4px 10px; border-radius:6px; font-size:0.75rem; color:white; }
+.card-title { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+.sid-link { font-weight:bold; color:#6c5ce7; text-decoration:none; font-size:1.15rem; }
+.vol-text { color:#636e72; font-size:0.9rem; background:#f1f2f6; padding:2px 8px; border-radius:4px; }
+.badge { padding:4px 10px; border-radius:6px; font-size:0.75rem; color:white; margin-right:5px; font-weight:bold; }
 .badge-tri { background:#6c5ce7; }
 .badge-box { background:#2d3436; }
 .badge-vol { background:#d63031; }
@@ -119,14 +103,10 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. 側邊欄 (介面維持原樣)
+# 3. 側邊欄
 # ==========================================
 db = load_full_db()
-modes = [
-    "⚡ 今日即時監控 (自動)",
-    "⏳ 歷史形態搜尋 (手動)",
-    "🌐 顯示所有股票連結"
-]
+modes = ["⚡ 今日即時監控 (自動)", "⏳ 歷史形態搜尋 (手動)", "🌐 顯示所有股票連結"]
 
 with st.sidebar:
     st.title("🎯 形態大師控制台")
@@ -136,22 +116,22 @@ with st.sidebar:
 
     if mode == "⚡ 今日即時監控 (自動)":
         st_autorefresh(interval=300000, key="auto")
-        t_tri = st.checkbox("📐 三角收斂", True)
-        t_box = st.checkbox("📦 旗箱整理", True)
-        t_vol = st.checkbox("🚀 今日爆量", True)
+        current_config = {
+            "tri": st.checkbox("📐 三角收斂", True),
+            "box": st.checkbox("📦 旗箱整理", True),
+            "vol": st.checkbox("🚀 今日爆量", True)
+        }
         t_min_v = st.number_input("最低量 (張)", value=300)
-        current_config = {"tri": t_tri, "box": t_box, "vol": t_vol}
         run_now = True
-
     elif mode == "⏳ 歷史形態搜尋 (手動)":
-        h_sid = st.text_input("代號 (輸入即強制顯示圖表)", placeholder="2330")
-        h_tri = st.checkbox("📐 三角收斂", True)
-        h_box = st.checkbox("📦 旗箱整理", True)
-        h_vol = st.checkbox("🚀 今日爆量", True)
+        h_sid = st.text_input("輸入個股代號", placeholder="例如: 2330")
+        current_config = {
+            "tri": st.checkbox("📐 三角收斂", True),
+            "box": st.checkbox("📦 旗箱整理", True),
+            "vol": st.checkbox("🚀 今日爆量", True)
+        }
         h_min_v = st.number_input("最低量 (張)", value=100)
-        current_config = {"tri": h_tri, "box": h_box, "vol": h_vol}
         run_now = st.button("🚀 開始掃描", use_container_width=True)
-
     else:
         run_now = False
 
@@ -159,99 +139,65 @@ with st.sidebar:
 # 4. 主畫面邏輯
 # ==========================================
 if mode == "🌐 顯示所有股票連結":
-    for sid, name in db.items():
+    for sid, info in db.items():
+        name = info['name'] if isinstance(info, dict) else info
         clean = sid.split(".")[0]
-        st.markdown(
-            f'<a class="sid-link" target="_blank" href="https://tw.stock.yahoo.com/quote/{clean}">{clean} {name}</a>',
-            unsafe_allow_html=True
-        )
+        st.markdown(f'· <a class="sid-link" target="_blank" href="https://tw.stock.yahoo.com/quote/{clean}">{clean} {name}</a>', unsafe_allow_html=True)
 
 elif run_now:
-    is_specific = (
-        mode == "⏳ 歷史形態搜尋 (手動)"
-        and "h_sid" in locals()
-        and h_sid.strip() != ""
-    )
-
+    is_specific = (mode == "⏳ 歷史形態搜尋 (手動)" and h_sid.strip() != "")
     if is_specific:
-        # 修正：同時嘗試 .TW 與 .TWO (上市與上櫃)
-        targets = [(f"{h_sid.upper()}.TW", "個股"), (f"{h_sid.upper()}.TWO", "個股")]
+        targets = [(f"{h_sid.upper()}.TW", "搜尋個股"), (f"{h_sid.upper()}.TWO", "搜尋個股")]
     else:
         targets = list(db.items())
 
     mv_limit = t_min_v if mode.startswith("⚡") else h_min_v
     results = []
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=8) as exe:
-        fs = {exe.submit(get_stock_data, s): (s, n) for s, n in targets}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=10) as exe:
+        # 修正這部分的解構賦值，以應對字典格式的 db
+        fs = {}
+        for item in targets:
+            sid = item[0]
+            info = item[1]
+            # 確保提取出乾淨的名稱字串
+            name = info['name'] if isinstance(info, dict) else info
+            fs[exe.submit(get_stock_data, sid)] = (sid, name)
+            
         for f in concurrent.futures.as_completed(fs):
             sid, name = fs[f]
             df = f.result()
             res = analyze_patterns(df, current_config)
-
-            if res and (
-                is_specific
-                or (res["labels"] and res["vol"] >= mv_limit)
-            ):
+            if res and (is_specific or (res["labels"] and res["vol"] >= mv_limit)):
                 res.update({"sid": sid, "name": name, "df": df})
                 results.append(res)
 
     if not results:
-        st.info("🔍 尚未符合條件的股票，或代號輸入錯誤。")
+        st.info("🔍 尚未發現符合形態的股票")
 
     for item in results:
         clean = item["sid"].split(".")[0]
-        badges = (
-            "".join(
-                f'<span class="badge {b["class"]}">{b["text"]}</span>'
-                for b in item["labels"]
-            )
-            if item["labels"]
-            else '<span class="badge badge-none">🔘 一般走勢</span>'
-        )
+        badges = "".join(f'<span class="badge {b["class"]}">{b["text"]}</span>' for b in item["labels"]) if item["labels"] else '<span class="badge badge-none">🔘 一般走勢</span>'
 
         st.markdown(f"""
         <div class="stock-card">
-            <div class="card-row">
-                <a class="sid-link" target="_blank" href="https://tw.stock.yahoo.com/quote/{clean}">
-                    🔗 {item["sid"]}
-                </a>
-                <span>{item["name"]}</span>
-            </div>
-            <div class="card-row">
-                <span>成交量 <b>{item["vol"]} 張</b></span>
-                <span class="price">${item["price"]}</span>
+            <div class="card-title">
+                <a class="sid-link" target="_blank" href="https://tw.stock.yahoo.com/quote/{clean}">🔗 {clean} {item["name"]}</a>
+                <span class="vol-text">量 {item["vol"]} 張</span>
             </div>
             <div>{badges}</div>
         </div>
         """, unsafe_allow_html=True)
 
-        with st.expander("📈 展開形態圖表"):
+        with st.expander("📈 形態分析圖表"):
             d = item["df"].tail(30)
             sh, ih, sl, il, x_reg = item["lines"]
-            
             fig = make_subplots(rows=1, cols=1)
-            fig.add_candlestick(
-                x=d.index,
-                open=d["Open"],
-                high=d["High"],
-                low=d["Low"],
-                close=d["Close"],
-                name="K線"
-            )
-            
-            # 繪製趨勢線 (對應最近 15 天)
+            fig.add_candlestick(x=d.index, open=d["Open"], high=d["High"], low=d["Low"], close=d["Close"], name="K線")
             p = d.tail(15)
-            fig.add_scatter(x=p.index, y=sh * x_reg + ih, name="壓力線", line=dict(dash="dash", color="rgba(214, 48, 49, 0.7)"))
-            fig.add_scatter(x=p.index, y=sl * x_reg + il, name="支撐線", line=dict(dash="dot", color="rgba(108, 92, 231, 0.7)"))
-            
-            fig.update_layout(
-                height=450,
-                xaxis_rangeslider_visible=False,
-                showlegend=False,
-                margin=dict(t=20, b=20, l=10, r=10)
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
+            fig.add_scatter(x=p.index, y=sh * x_reg + ih, line=dict(dash="dash", color="#d63031"), name="壓力線")
+            fig.add_scatter(x=p.index, y=sl * x_reg + il, line=dict(dash="dot", color="#6c5ce7"), name="支撐線")
+            fig.update_layout(height=400, xaxis_rangeslider_visible=False, showlegend=False, margin=dict(t=0, b=0, l=0, r=0))
+            st.plotly_chart(fig, use_container_width=True, key=f"chart_{item['sid']}")
 else:
-    st.info("👈 請從左側選擇功能並點擊「開始掃描」")
+    st.info("👈 請由左側功能表開始")
