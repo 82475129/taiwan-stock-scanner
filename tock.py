@@ -146,3 +146,4 @@ for category, stocks in final_groups.items():
                 )
                 st.plotly_chart(fig, use_container_width=True, key=f"f_{sid}")
 
+
