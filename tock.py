@@ -4,9 +4,18 @@ import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 from scipy.stats import linregress
-from streamlit_autorefresh import st_autorefresh
+try:
+    from streamlit_autorefresh import st_autorefresh
+except ImportError:
+    pass
 from bs4 import BeautifulSoup
 import json, os, requests, time
+
+# ==========================================
+# 檢查運行環境：判斷是網頁還是 GitHub Actions
+# ==========================================
+# 透過 Streamlit 的內部屬性來判斷，最準確
+IS_STREAMLIT = st._is_running_with_streamlit
 
 # ==========================================
 # 0. 資料載入與多分類爬蟲邏輯
@@ -18,14 +27,10 @@ def update_json_database():
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     new_db = {}
     
-    # 自動生成分類網址：上市(TAI) 24-31, 40-47；上櫃(TWO) 153-160
     sector_ids = [2, 7, 24, 25, 26, 27, 28, 29, 30, 31] + list(range(40, 48))
     urls = [f"https://tw.stock.yahoo.com/class-quote?sectorId={sid}&exchange=TAI" for sid in sector_ids]
-    
     otc_ids = list(range(153, 161))
     urls += [f"https://tw.stock.yahoo.com/class-quote?sectorId={sid}&exchange=TWO" for sid in otc_ids]
-    
-    # 集團股
     urls.append("https://tw.stock.yahoo.com/class-quote?category=%E4%B8%AD%E5%A4%A9%E7%94%9F%E6%8A%80&categoryLabel=%E9%9B%86%E5%9C%98%E8%82%A1")
 
     for url in urls:
@@ -38,7 +43,7 @@ def update_json_database():
                 code_el = row.select_one('span.Fz\(14px\)')
                 if name_el and code_el:
                     new_db[code_el.text.strip()] = name_el.text.strip()
-            time.sleep(0.2) 
+            time.sleep(0.1) 
         except: continue
         
     with open(DB_FILE, 'w', encoding='utf-8') as f:
@@ -54,7 +59,7 @@ def get_full_stock_list():
             return json.load(f)
     except: return {}
 
-# 載入資料庫
+# 1. 初始化資料 (僅在網頁模式或 Actions 執行時載入)
 db = get_full_stock_list()
 
 # ==========================================
@@ -64,7 +69,8 @@ def analyze_patterns(df, config, days=15):
     if df is None or len(df) < 30: return None
     try:
         df['MA20'] = df['Close'].rolling(window=20).mean()
-        p_now, m_now = float(df['Close'].iloc[-1]), float(df['MA20'].iloc[-1])
+        p_now = float(df['Close'].iloc[-1])
+        m_now = float(df['MA20'].iloc[-1])
         if config.get('use_ma') and p_now < m_now: return None
 
         d = df.tail(days).copy()
@@ -84,13 +90,9 @@ def analyze_patterns(df, config, days=15):
     except: return None
 
 # ==========================================
-# 2. 介面設計 (僅在 Streamlit 環境執行)
+# 2. 介面設計 & 3. 掃描結果 (嚴格保護區塊)
 # ==========================================
-# 初始化 run 變數為 False，防止指令模式執行
-run = False 
-
-# 檢查是否在 Streamlit 運行環境
-try:
+if IS_STREAMLIT:
     st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
     st.markdown("""<style>.stApp { background-color: #f4f7f6; }.stock-card { background: white; padding: 20px; border-radius: 12px; margin-bottom: 20px; border-left: 8px solid #6c5ce7; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }.badge { padding: 4px 10px; border-radius: 6px; font-size: 0.8rem; font-weight: bold; margin-right: 5px; color: white; }.badge-tri { background-color: #6c5ce7; }.badge-box { background-color: #2d3436; }.badge-vol { background-color: #d63031; }</style>""", unsafe_allow_html=True)
 
@@ -101,11 +103,11 @@ try:
                 db = update_json_database()
                 st.cache_data.clear()
                 st.success("同步完成！")
-
         st.info(f"📁 已載入：{len(db)} 檔標的")
         mode = st.radio("功能模式", ["⚡ 即時監控", "⏳ 歷史搜尋"])
         st.divider()
         
+        run = False
         if "⚡" in mode:
             st_autorefresh(interval=300000, key="auto_refresh")
             f_ma = st.checkbox("股價在 MA20 之上", value=True)
@@ -119,69 +121,61 @@ try:
             h_sid = st.text_input("輸入股票代號")
             config = {'tri': True, 'box': True, 'vol': True, 'use_ma': False}
             run = st.button("🚀 開始掃描", type="primary")
-except:
-    # 如果不在 Streamlit 環境，上面的代碼會出錯並跳到這裡
-    pass
 
-# ==========================================
-# 3. 掃描與結果 (只有在網頁點擊 run 才執行)
-# ==========================================
-if run:
-    st.title("台股 Pro-X 形態大師")
-    if "⏳" in mode and h_sid:
-        s_code = h_sid.upper()
-        if not s_code.endswith((".TW", ".TWO")): s_code = f"{s_code}.TW"
-        targets = [(s_code, db.get(s_code, h_sid.upper()))]
-    else:
-        targets = list(db.items())
-        
-    final_results = []
-    
-    with st.status(f"🔍 正在掃描 {len(targets)} 檔形態...", expanded=True) as status:
-        p_bar = st.progress(0)
-        chunk_size = 30
-        
-        for i in range(0, len(targets), chunk_size):
-            p_bar.progress(min(i / len(targets), 1.0))
-            chunk = targets[i : i + chunk_size]
-            t_list = [t[0] for t in chunk]
+    if run:
+        st.title("台股 Pro-X 形態大師")
+        targets = []
+        if "⏳" in mode and h_sid:
+            s_code = h_sid.upper()
+            if not s_code.endswith((".TW", ".TWO")): s_code = f"{s_code}.TW"
+            targets = [(s_code, db.get(s_code, h_sid.upper()))]
+        else:
+            targets = list(db.items())
             
-            try:
-                data = yf.download(t_list, period="2mo", group_by='ticker', progress=False)
-                for sid, name in chunk:
-                    try:
-                        df_s = data[sid].dropna() if len(t_list) > 1 else data.dropna()
-                        if df_s.empty: continue
-                        res = analyze_patterns(df_s, config)
-                        if res and (not "⚡" in mode or res['vol'] >= t_min_v):
-                            res.update({"sid": sid, "name": name, "df": df_s})
-                            final_results.append(res)
-                    except: continue
-            except: continue
-        p_bar.empty()
-        status.update(label=f"✅ 找到 {len(final_results)} 檔符合標的", state="complete", expanded=False)
+        final_results = []
+        with st.status(f"🔍 正在掃描 {len(targets)} 檔形態...", expanded=True) as status:
+            p_bar = st.progress(0)
+            chunk_size = 30
+            for i in range(0, len(targets), chunk_size):
+                p_bar.progress(min(i / len(targets), 1.0))
+                chunk = targets[i : i + chunk_size]
+                t_list = [t[0] for t in chunk]
+                try:
+                    data = yf.download(t_list, period="2mo", group_by='ticker', progress=False)
+                    for sid, name in chunk:
+                        try:
+                            df_s = data[sid].dropna() if len(t_list) > 1 else data.dropna()
+                            if df_s.empty: continue
+                            res = analyze_patterns(df_s, config)
+                            if res and (not "⚡" in mode or res['vol'] >= t_min_v):
+                                res.update({"sid": sid, "name": name, "df": df_s})
+                                final_results.append(res)
+                        except: continue
+                except: continue
+            p_bar.empty()
+            status.update(label=f"✅ 找到 {len(final_results)} 檔符合標的", state="complete", expanded=False)
 
-    if final_results:
-        for item in final_results:
-            p_color = "#d63031" if item['price'] >= item['prev_close'] else "#27ae60"
-            b_html = "".join([f'<span class="badge {l["class"]}">{l["text"]}</span>' for l in item['labels']])
-            st.markdown(f"""<div class="stock-card"><b>{item['sid']} {item['name']}</b> <span style="color:{p_color}; float:right; font-size:1.2rem;">${item['price']}</span><br><small>量: {item['vol']}張 | MA20: {item['ma20']}</small><br>{b_html}</div>""", unsafe_allow_html=True)
-            with st.expander("📈 展開 K 線圖"):
-                d_p = item['df'].tail(30)
-                sh, ih, sl, il, x_r = item['lines']
-                fig = go.Figure(data=[go.Candlestick(x=d_p.index, open=d_p['Open'], high=d_p['High'], low=d_p['Low'], close=d_p['Close'])])
-                fig.add_trace(go.Scatter(x=d_p.tail(15).index, y=sh*x_r+ih, line=dict(color='#ff4757', dash='dash')))
-                fig.add_trace(go.Scatter(x=d_p.tail(15).index, y=sl*x_r+il, line=dict(color='#2ed573', dash='dot')))
-                fig.update_layout(height=400, template="plotly_white", showlegend=False, xaxis_rangeslider_visible=False)
-                st.plotly_chart(fig, use_container_width=True)
-    else:
-        st.info("💡 目前無符合形態的股票。")
+        if final_results:
+            for item in final_results:
+                p_color = "#d63031" if item['price'] >= item['prev_close'] else "#27ae60"
+                b_html = "".join([f'<span class="badge {l["class"]}">{l["text"]}</span>' for l in item['labels']])
+                st.markdown(f"""<div class="stock-card"><b>{item['sid']} {item['name']}</b> <span style="color:{p_color}; float:right; font-size:1.2rem;">${item['price']}</span><br><small>量: {item['vol']}張 | MA20: {item['ma20']}</small><br>{b_html}</div>""", unsafe_allow_html=True)
+                with st.expander("📈 展開 K 線圖"):
+                    d_p = item['df'].tail(30)
+                    sh, ih, sl, il, x_r = item['lines']
+                    fig = go.Figure(data=[go.Candlestick(x=d_p.index, open=d_p['Open'], high=d_p['High'], low=d_p['Low'], close=d_p['Close'])])
+                    fig.add_trace(go.Scatter(x=d_p.tail(15).index, y=sh*x_r+ih, line=dict(color='#ff4757', dash='dash')))
+                    fig.add_trace(go.Scatter(x=d_p.tail(15).index, y=sl*x_r+il, line=dict(color='#2ed573', dash='dot')))
+                    fig.update_layout(height=400, template="plotly_white", showlegend=False, xaxis_rangeslider_visible=False)
+                    st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.info("💡 目前無符合形態的股票。")
 
 # ==========================================
-# 4. GitHub Actions 專用入口
+# 4. GitHub Actions 入口 (只有 python 執行時才觸發)
 # ==========================================
 if __name__ == "__main__":
-    # 當 GitHub 執行 python tock.py 時
-    print("🚀 [GitHub Actions] 啟動自動化更新...")
-    update_json_database()
-    print("✅ [GitHub Actions] 資料庫更新成功！")
+    if not IS_STREAMLIT:
+        print("🚀 [GitHub Actions] 偵測到指令模式，開始更新資料庫...")
+        update_json_database()
+        print("✅ [GitHub Actions] 更新成功！")
