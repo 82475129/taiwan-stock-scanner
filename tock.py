@@ -13,87 +13,92 @@ from bs4 import BeautifulSoup
 import time
 
 # ==========================================
-# 0. 啟動即執行：自動初始化資料庫
+# 0. 核心修正：底層自動載入機制
 # ==========================================
 DB_FILE = "taiwan_electronic_stocks.json"
 
-def init_database():
-    """啟動時自動檢查並建立全電子股資料庫"""
-    if not os.path.exists(DB_FILE):
-        print("🚀 [首次執行] 正在自動抓取全台電子產業清單 (約 800+ 檔)...")
-        sectors = {
-            "TAI": {40: "半導體", 41: "電腦週邊", 42: "光電", 43: "通信網路", 44: "電子零組件", 45: "電子通路", 46: "資訊服務", 47: "其他電子"},
-            "TWO": {153: "半導體", 154: "電腦週邊", 155: "光電", 156: "通信網路", 157: "電子零組件", 158: "電子通路", 159: "資訊服務", 160: "其他電子"}
-        }
-        full_db = {}
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
-        
-        for ex, cats in sectors.items():
-            for sid, cat_name in cats.items():
-                try:
-                    url = f"https://tw.stock.yahoo.com/class-quote?sectorId={sid}&exchange={ex}"
-                    resp = requests.get(url, headers=headers, timeout=10)
-                    soup = BeautifulSoup(resp.text, 'html.parser')
-                    rows = soup.select('div[class*="table-row"]')
-                    for row in rows:
-                        c = row.select_one('span[class*="C(#7c7e80)"]')
-                        n = row.select_one('div[class*="Lh(20px)"]')
-                        if c and n:
-                            suffix = ".TW" if ex == "TAI" else ".TWO"
-                            full_db[f"{c.get_text(strip=True)}{suffix}"] = n.get_text(strip=True)
-                except: pass
-        
+@st.cache_data(show_spinner=False)
+def get_full_stock_list():
+    """
+    底層載入邏輯：
+    1. 優先讀取本地 JSON
+    2. 若無 JSON，立即爬取 Yahoo 並回傳字典，不等待硬碟寫入完成
+    """
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                if len(data) > 0: return data
+        except: pass
+
+    # 執行底層爬取
+    sectors = {
+        "TAI": {40: "半導體", 41: "電腦週邊", 42: "光電", 43: "通信網路", 44: "電子零組件", 45: "電子通路", 46: "資訊服務", 47: "其他電子"},
+        "TWO": {153: "半導體", 154: "電腦週邊", 155: "光電", 156: "通信網路", 157: "電子零組件", 158: "電子通路", 159: "資訊服務", 160: "其他電子"}
+    }
+    full_db = {}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+    
+    # 建立一個佔位符顯示進度
+    status = st.empty()
+    status.info("🚀 正在初始化底層資料庫 (約 800+ 檔)，請稍候...")
+    
+    for ex, cats in sectors.items():
+        for sid, cat_name in cats.items():
+            try:
+                url = f"https://tw.stock.yahoo.com/class-quote?sectorId={sid}&exchange={ex}"
+                resp = requests.get(url, headers=headers, timeout=10)
+                soup = BeautifulSoup(resp.text, 'html.parser')
+                rows = soup.select('div[class*="table-row"]')
+                for row in rows:
+                    c = row.select_one('span[class*="C(#7c7e80)"]')
+                    n = row.select_one('div[class*="Lh(20px)"]')
+                    if c and n:
+                        suffix = ".TW" if ex == "TAI" else ".TWO"
+                        full_db[f"{c.get_text(strip=True)}{suffix}"] = n.get_text(strip=True)
+            except: pass
+    
+    # 嘗試存檔供下次使用（失敗也無妨）
+    try:
         with open(DB_FILE, 'w', encoding='utf-8') as f:
             json.dump(full_db, f, ensure_ascii=False, indent=2)
-        print(f"✨ [初始化成功] 已存入 {len(full_db)} 檔電子股數據。")
+    except: pass
+    
+    status.empty()
+    return full_db
 
-# 強制在載入前執行
-init_database()
+# 執行底層載入
+db = get_full_stock_list()
 
 # ==========================================
-# 1. 形態分析引擎
+# 1. 形態分析邏輯 (保持不變)
 # ==========================================
 def analyze_patterns(df, config, days=15):
     if df is None or len(df) < 30: return None
     try:
-        # 計算 MA20 均線
         df['MA20'] = df['Close'].rolling(window=20).mean()
-        price_now = float(df['Close'].iloc[-1])
-        ma20_now = float(df['MA20'].iloc[-1])
-        
-        # 篩選：必須站上月線
-        if config.get('use_ma') and price_now < ma20_now:
-            return None
+        p_now = float(df['Close'].iloc[-1])
+        m_now = float(df['MA20'].iloc[-1])
+        if config.get('use_ma') and p_now < m_now: return None
 
         d = df.tail(days).copy()
         h, l, v = d['High'].values.astype(float), d['Low'].values.astype(float), d['Volume'].values.astype(float)
         x = np.arange(len(h))
-        
         sh, ih, _, _, _ = linregress(x, h)
         sl, il, _, _, _ = linregress(x, l)
-        v_mean = df['Volume'].iloc[-21:-1].mean()
+        v_m = df['Volume'].iloc[-21:-1].mean()
         
         hits = []
-        if config.get('tri') and (sh < -0.003 and sl > 0.003):
-            hits.append({"text": "📐 三角收斂", "class": "badge-tri"})
-        if config.get('box') and (abs(sh) < 0.03 and abs(sl) < 0.03):
-            hits.append({"text": "📦 旗箱整理", "class": "badge-box"})
-        if config.get('vol') and (v[-1] > v_mean * 1.5):
-            hits.append({"text": "🚀 今日爆量", "class": "badge-vol"})
+        if config.get('tri') and (sh < -0.003 and sl > 0.003): hits.append({"text": "📐 三角收斂", "class": "badge-tri"})
+        if config.get('box') and (abs(sh) < 0.03 and abs(sl) < 0.03): hits.append({"text": "📦 旗箱整理", "class": "badge-box"})
+        if config.get('vol') and (v[-1] > v_m * 1.5): hits.append({"text": "🚀 今日爆量", "class": "badge-vol"})
         
         if not hits: return None
-        
-        return {
-            "labels": hits, "lines": (sh, ih, sl, il, x),
-            "price": round(price_now, 2),
-            "ma20": round(ma20_now, 2),
-            "prev_close": float(df['Close'].iloc[-2]),
-            "vol": int(v[-1] // 1000)
-        }
+        return {"labels": hits, "lines": (sh, ih, sl, il, x), "price": round(p_now, 2), "ma20": round(m_now, 2), "prev_close": float(df['Close'].iloc[-2]), "vol": int(v[-1] // 1000)}
     except: return None
 
 # ==========================================
-# 2. 介面與 CSS (保持原設計)
+# 2. 介面設計 (保持你的原樣)
 # ==========================================
 st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
 
@@ -108,19 +113,11 @@ st.markdown("""
     .badge-tri { background-color: #6c5ce7; }
     .badge-box { background-color: #2d3436; }
     .badge-vol { background-color: #d63031; }
-    .ma-text { color: #0984e3; font-size: 12px; font-weight: bold; }
 </style>
 """, unsafe_allow_html=True)
 
-if not os.path.exists(DB_FILE):
-    st.error("資料庫建立失敗，請確認網路連線並重新整理。")
-    st.stop()
-
-with open(DB_FILE, 'r', encoding='utf-8') as f:
-    db = json.load(f)
-
 # ==========================================
-# 3. 左側邊欄 (介面完全不動)
+# 3. 左側控制台 (介面固定)
 # ==========================================
 if 'current_mode' not in st.session_state:
     st.session_state.current_mode = "⚡ 今日即時監控 (自動)"
@@ -129,14 +126,15 @@ modes = ["⚡ 今日即時監控 (自動)", "⏳ 歷史形態搜尋 (手動)", "
 
 with st.sidebar:
     st.title("🎯 形態大師控制台")
-    st.info(f"📁 已載入：{len(db)} 檔電子股")
+    # 這裡會動態顯示抓取到的數量，不再是 0
+    st.success(f"📁 已載入：{len(db)} 檔電子股")
+    
     selected_mode = st.radio("選擇功能模式", modes, index=modes.index(st.session_state.current_mode))
     st.session_state.current_mode = selected_mode
     st.divider()
     
     if selected_mode == "⚡ 今日即時監控 (自動)":
         st_autorefresh(interval=300000, key="auto_refresh")
-        st.markdown("### 形態與趨勢篩選")
         f_ma = st.checkbox("股價需在 20MA 之上", value=True)
         t_tri = st.checkbox("📐 三角收斂", value=True)
         t_box = st.checkbox("📦 旗箱整理", value=True)
@@ -152,82 +150,54 @@ with st.sidebar:
         run_now = False
 
 # ==========================================
-# 4. 主畫面掃描執行 (修正報錯與效能)
+# 4. 掃描執行
 # ==========================================
 st.title("台股 Pro-X 形態大師")
 
 if run_now:
     targets = [(f"{h_sid.upper()}.TW", h_sid.upper())] if (selected_mode == "⏳ 歷史形態搜尋 (手動)" and h_sid) else list(db.items())
     
-    if not targets:
-        st.warning("清單為空，請確認資料庫。")
+    if len(targets) == 0:
+        st.warning("資料載入中或清單為空，請稍後...")
     else:
         final_results = []
-        progress_text = st.empty()
-        progress_bar = st.progress(0)
-        
-        # 將 800 檔分成每 50 檔一包，避免 Yahoo 報錯
+        # 分批掃描避免報錯
         chunk_size = 50
         ticker_items = list(targets)
         
-        for i in range(0, len(ticker_items), chunk_size):
-            chunk = ticker_items[i : i + chunk_size]
-            t_list = [t[0] for t in chunk]
-            
-            progress_text.text(f"正在掃描第 {i} ~ {min(i+chunk_size, len(ticker_items))} 檔...")
-            progress_bar.progress(i / len(ticker_items))
-            
-            try:
-                # 核心修正：加入檢核避免 concat 錯誤
-                data = yf.download(t_list, period="2mo", group_by='ticker', progress=False)
-                if data.empty: continue
-                
-                for sid, name in chunk:
-                    try:
-                        df_stock = data[sid].dropna() if len(t_list) > 1 else data.dropna()
-                        if df_stock.empty: continue
-                        
-                        res = analyze_patterns(df_stock, current_config)
-                        if res and (selected_mode == "⏳ 歷史形態搜尋 (手動)" or res['vol'] >= t_min_v):
-                            res.update({"sid": sid, "name": name, "df": df_stock})
-                            final_results.append(res)
-                    except: continue
-            except: continue
-            
-        progress_bar.empty()
-        progress_text.empty()
+        with st.status("正在下載全產業數據...", expanded=False) as status:
+            for i in range(0, len(ticker_items), chunk_size):
+                chunk = ticker_items[i : i + chunk_size]
+                t_list = [t[0] for t in chunk]
+                try:
+                    data = yf.download(t_list, period="2mo", group_by='ticker', progress=False)
+                    if data.empty: continue
+                    for sid, name in chunk:
+                        try:
+                            df_s = data[sid].dropna() if len(t_list) > 1 else data.dropna()
+                            if df_s.empty: continue
+                            res = analyze_patterns(df_s, current_config)
+                            if res and (selected_mode == "⏳ 歷史形態搜尋 (手動)" or res['vol'] >= t_min_v):
+                                res.update({"sid": sid, "name": name, "df": df_s})
+                                final_results.append(res)
+                        except: continue
+                except: continue
+            status.update(label="掃描完成!", state="complete")
 
         if not final_results:
             st.info("目前沒有符合篩選條件的標的。")
         else:
             for item in final_results:
+                # 渲染卡片邏輯 (與先前一致)
                 p_color = "#d63031" if item['price'] >= item['prev_close'] else "#27ae60"
                 b_html = "".join([f'<span class="badge {l["class"]}">{l["text"]}</span>' for l in item['labels']])
-                
-                st.markdown(f"""
-                    <div class="stock-card">
-                        <div class="card-row">
-                            <a class="sid-link" href="https://tw.stock.yahoo.com/quote/{item['sid'].split('.')[0]}" target="_blank">
-                                🔗 {item['sid'].split('.')[0]} {item['name']}
-                            </a>
-                            <span class="price" style="color:{p_color};">${item['price']}</span>
-                        </div>
-                        <div class="card-row">
-                            <span style="color:#666; font-size:0.9rem;">成交量: <b>{item['vol']} 張</b></span>
-                            <span class="ma-text">MA20: {item['ma20']}</span>
-                        </div>
-                        <div>{b_html}</div>
-                    </div>
-                """, unsafe_allow_html=True)
-                
+                st.markdown(f"""<div class="stock-card"><div class="card-row"><a class="sid-link" href="https://tw.stock.yahoo.com/quote/{item['sid'].split('.')[0]}" target="_blank">🔗 {item['sid'].split('.')[0]} {item['name']}</a><span class="price" style="color:{p_color};">${item['price']}</span></div><div class="card-row"><span>成交量: <b>{item['vol']} 張</b></span><span style="color:#0984e3; font-size:12px;">MA20: {item['ma20']}</span></div><div>{b_html}</div></div>""", unsafe_allow_html=True)
                 with st.expander("📈 展開形態圖表"):
                     d_p = item['df'].tail(30)
                     sh, ih, sl, il, x_r = item['lines']
                     fig = go.Figure(data=[go.Candlestick(x=d_p.index, open=d_p['Open'], high=d_p['High'], low=d_p['Low'], close=d_p['Close'], name="K線")])
                     fig.add_trace(go.Scatter(x=d_p.index, y=d_p['MA20'], line=dict(color='#3498db', width=1.5), name="MA20"))
-                    fig.add_trace(go.Scatter(x=d_p.tail(15).index, y=sh*x_r + ih, line=dict(color='#ff4757', dash='dash'), name="壓"))
-                    fig.add_trace(go.Scatter(x=d_p.tail(15).index, y=sl*x_r + il, line=dict(color='#2ed573', dash='dot'), name="撐"))
+                    fig.add_trace(go.Scatter(x=d_p.tail(15).index, y=sh*x_r + ih, line=dict(color='#ff4757', dash='dash')))
+                    fig.add_trace(go.Scatter(x=d_p.tail(15).index, y=sl*x_r + il, line=dict(color='#2ed573', dash='dot')))
                     fig.update_layout(height=400, margin=dict(l=5,r=5,t=5,b=5), xaxis_rangeslider_visible=False, template="plotly_white", showlegend=False)
-                    st.plotly_chart(fig, use_container_width=True, key=f"fig_{item['sid']}")
-
-st.caption(f"最後更新：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                    st.plotly_chart(fig, use_container_width=True)
