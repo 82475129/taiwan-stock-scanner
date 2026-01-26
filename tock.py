@@ -20,12 +20,18 @@ DB_FILE = "taiwan_electronic_stocks.json"
 
 @st.cache_data(ttl=3600)
 def load_full_db():
-    # 預設基礎資料，若 JSON 檔案不存在時使用
+    # 預設基礎資料庫
     base = {
-        "2330.TW": {"name": "台積電", "cat": "電子"},
-        "2454.TW": {"name": "聯發科", "cat": "電子"},
-        "2317.TW": {"name": "鴻海", "cat": "電子"},
-        "2481.TW": {"name": "強茂", "cat": "電子"}
+        "2330.TW": {"name": "台積電", "cat": "半導體"},
+        "2454.TW": {"name": "聯發科", "cat": "IC設計"},
+        "2317.TW": {"name": "鴻海", "cat": "組裝"},
+        "2481.TW": {"name": "強茂", "cat": "分離元件"},
+        "2352.TW": {"name": "佳世達", "cat": "系統整合"},
+        "3034.TW": {"name": "聯詠", "cat": "驅動IC"},
+        "2436.TW": {"name": "偉詮電", "cat": "IC設計"},
+        "2380.TW": {"name": "虹光", "cat": "光學元件"},
+        "2405.TW": {"name": "輔信", "cat": "電腦週邊"},
+        "3014.TW": {"name": "聯陽", "cat": "IC設計"}
     }
     if os.path.exists(DB_FILE):
         try:
@@ -38,18 +44,17 @@ def load_full_db():
 @st.cache_data(ttl=300)
 def get_stock_data(sid):
     try:
-        # 下載最近 45 天數據
         df = yf.download(sid, period="45d", progress=False)
         if df.empty: return pd.DataFrame()
         
-        # 處理 yfinance 新版 MultiIndex 欄位結構
+        # 處理 yfinance 新版 MultiIndex 結構
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
         
-        # ✨ 解決 Narwhals DuplicateError：移除重複名稱的欄位
+        # ✨ 解決 DuplicateError：刪除重複名稱的欄位 (Plotly 必備修正)
         df = df.loc[:, ~df.columns.duplicated()]
         
-        # 強制過濾必要欄位，排除雜訊
+        # 強制選取必要欄位
         required = ["Open", "High", "Low", "Close", "Volume"]
         df = df[required].dropna()
         return df
@@ -57,33 +62,34 @@ def get_stock_data(sid):
         return pd.DataFrame()
 
 # ==========================================
-# 1. 形態分析與回歸邏輯
+# 1. 形態分析邏輯 (三角收斂、旗箱整理、爆量)
 # ==========================================
 def analyze_patterns(df, config, days=15):
     if df is None or df.empty or len(df) < days:
         return None
-    
     d = df.tail(days)
     try:
-        # 提取數據並轉為 1D 陣列
+        # 確保數據為 1D 陣列
         h = d["High"].values.flatten().astype(float)
         l = d["Low"].values.flatten().astype(float)
         v = d["Volume"].values.flatten().astype(float)
         x = np.arange(len(h))
         
-        # 計算壓力線(High)與支撐線(Low)的斜率
+        # 線性回歸計算趨勢斜率
         sh, ih, *_ = linregress(x, h)
         sl, il, *_ = linregress(x, l)
         
         v_mean = np.mean(v[:-1]) if len(v) >= 2 else np.mean(v)
         hits = []
         
-        # 標籤邏輯
-        if config.get("tri") and sh < -0.003 and sl > 0.003:
+        # 📐 三角收斂判斷
+        if config.get("tri") and sh < -0.003 and sl > 0.003: 
             hits.append({"text": "📐三角收斂", "class": "badge-tri"})
-        if config.get("box") and abs(sh) < 0.03 and abs(sl) < 0.03:
+        # 📦 旗箱整理判斷
+        if config.get("box") and abs(sh) < 0.03 and abs(sl) < 0.03: 
             hits.append({"text": "📦旗箱整理", "class": "badge-box"})
-        if config.get("vol") and v[-1] > v_mean * 1.3:
+        # 🚀 今日爆量判斷
+        if config.get("vol") and v[-1] > v_mean * 1.3: 
             hits.append({"text": "🚀今日爆量", "class": "badge-vol"})
             
         return {"labels": hits, "lines": (sh, ih, sl, il, x), "vol": int(v[-1] // 1000)}
@@ -91,11 +97,11 @@ def analyze_patterns(df, config, days=15):
         return None
 
 # ==========================================
-# 2. UI 樣式與自定義標題 (科技+動態+專業)
+# 2. UI 樣式與科技感標題 (結合三合一感覺)
 # ==========================================
 st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
 
-# 頂部視覺化標題區塊
+# 主畫面標題區塊：科技漸層感 + 動態描述 + 專業符號
 st.markdown("""
 <div style="text-align: center; padding: 25px; background: linear-gradient(135deg, #6c5ce7 0%, #a29bfe 100%); border-radius: 15px; margin-bottom: 25px; color: white; box-shadow: 0 4px 15px rgba(108, 92, 231, 0.2);">
     <h1 style="margin: 0; font-size: 2.2rem; font-weight: 800; letter-spacing: 1px;">🎯 台股 Pro-X：即時形態 AI 偵測系統</h1>
@@ -110,7 +116,7 @@ st.markdown("""
 }
 .card-header { display:flex; justify-content:space-between; align-items:center; }
 .sid-link { font-weight:bold; color:#6c5ce7; text-decoration:none; font-size:1.2rem; }
-.vol-info { color:#636e72; font-size:0.9rem; background:#f1f2f6; padding:4px 10px; border-radius:6px; }
+.vol-info { color:#636e72; font-size:0.9rem; background:#f1f2f6; padding:4px 10px; border-radius:6px; font-weight: 500;}
 .badge { padding:5px 12px; border-radius:6px; font-size:0.8rem; color:white; margin-right:6px; font-weight:600; display:inline-block; margin-top:5px; }
 .badge-tri { background:#6c5ce7; }
 .badge-box { background:#2d3436; }
@@ -120,7 +126,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. 側邊欄控制 (保留原始介面)
+# 3. 側邊欄控制 (左側介面完全保留)
 # ==========================================
 db = load_full_db()
 modes = ["⚡ 今日即時監控 (自動)", "⏳ 歷史形態搜尋 (手動)", "🌐 顯示所有股票連結"]
@@ -153,28 +159,28 @@ with st.sidebar:
         run_now = False
 
 # ==========================================
-# 4. 主畫面邏輯與渲染
+# 4. 主畫面顯示邏輯
 # ==========================================
 if mode == "🌐 顯示所有股票連結":
     for sid, info in db.items():
+        # ✨ 名稱處理邏輯修正：解決字典亂碼問題
         name = info['name'] if isinstance(info, dict) else info
-        clean = sid.split(".")[0]
-        st.markdown(f'· <a class="sid-link" target="_blank" href="https://tw.stock.yahoo.com/quote/{clean}">{clean} {name}</a>', unsafe_allow_html=True)
+        st.markdown(f'· <a class="sid-link" target="_blank" href="https://tw.stock.yahoo.com/quote/{sid.split(".")[0]}">{sid.split(".")[0]} {name}</a>', unsafe_allow_html=True)
 
 elif run_now:
     is_specific = (mode == "⏳ 歷史形態搜尋 (手動)" and h_sid.strip() != "")
     
     if is_specific:
-        sid_tw = f"{h_sid.upper()}.TW"
-        sid_two = f"{h_sid.upper()}.TWO"
-        # 搜尋時自動比對名稱
-        def find_name(s):
+        sid_tw, sid_two = f"{h_sid.upper()}.TW", f"{h_sid.upper()}.TWO"
+        def get_nm(s):
             info = db.get(s)
-            return (info['name'] if isinstance(info, dict) else info) if info else None
+            if not info: return None
+            return info['name'] if isinstance(info, dict) else info
         
-        actual_name = find_name(sid_tw) or find_name(sid_two) or "個股"
-        targets = [(sid_tw, actual_name), (sid_two, actual_name)]
+        name_found = get_nm(sid_tw) or get_nm(sid_two) or "個股"
+        targets = [(sid_tw, name_found), (sid_two, name_found)]
     else:
+        # 自動監控模式
         targets = []
         for sid, info in db.items():
             name = info['name'] if isinstance(info, dict) else info
@@ -194,15 +200,16 @@ elif run_now:
                 results.append(res)
 
     if not results:
-        st.info("🔍 尚未發現符合條件的股票。")
+        st.info("🔍 目前沒有符合條件的股票，或代號輸入錯誤。")
     
-    # 排序：有形態標籤的排在最前面
+    # 排序：標籤越多排越前面
     results.sort(key=lambda x: len(x["labels"]), reverse=True)
 
     for item in results:
         clean = item["sid"].split(".")[0]
         badges = "".join(f'<span class="badge {b["class"]}">{b["text"]}</span>' for b in item["labels"]) if item["labels"] else '<span class="badge badge-none">🔘 一般走勢</span>'
 
+        # ✨ 渲染卡片：移除股價，顯示名稱
         st.markdown(f"""
         <div class="stock-card">
             <div class="card-header">
@@ -220,19 +227,13 @@ elif run_now:
             fig = make_subplots(rows=1, cols=1)
             fig.add_candlestick(x=d.index, open=d["Open"], high=d["High"], low=d["Low"], close=d["Close"], name="K線")
             
-            # 繪製預測趨勢線 (只顯示最近 15 天)
+            # 趨勢線渲染
             p = d.tail(15)
             fig.add_scatter(x=p.index, y=sh * x_reg + ih, line=dict(dash="dash", color="#d63031"), name="壓力線")
             fig.add_scatter(x=p.index, y=sl * x_reg + il, line=dict(dash="dot", color="#6c5ce7"), name="支撐線")
             
-            fig.update_layout(
-                height=400, 
-                xaxis_rangeslider_visible=False, 
-                showlegend=False, 
-                margin=dict(t=0, b=0, l=0, r=0),
-                hovermode="x unified"
-            )
-            # ✨ 使用唯一 key 避免重複渲染錯誤
-            st.plotly_chart(fig, use_container_width=True, key=f"final_chart_{item['sid']}")
+            fig.update_layout(height=400, xaxis_rangeslider_visible=False, showlegend=False, margin=dict(t=0, b=0, l=0, r=0))
+            # ✨ 修正：使用唯一 key 避免元件衝突
+            st.plotly_chart(fig, use_container_width=True, key=f"v_final_{item['sid']}")
 else:
-    st.info("👈 請從左側控制台選擇模式並開始掃描。")
+    st.info("👈 請由左側控制台開始掃描")
