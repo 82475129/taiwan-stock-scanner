@@ -37,9 +37,15 @@ def load_full_db():
 @st.cache_data(ttl=300)
 def get_stock_data(sid):
     try:
+        # 下載資料
         df = yf.download(sid, period="45d", progress=False)
         if df.empty:
             return pd.DataFrame()
+        
+        # ✨ 關鍵修正：處理 yfinance 的 MultiIndex 欄位問題
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = df.columns.get_level_values(0)
+            
         df = df.dropna()
         return df
     except:
@@ -52,32 +58,41 @@ def analyze_patterns(df, config, days=15):
     if df is None or df.empty or len(df) < days:
         return None
 
+    # 取得最近 N 天資料並確保為 1D array
     d = df.tail(days)
-    h = d["High"].values.astype(float)
-    l = d["Low"].values.astype(float)
-    v = d["Volume"].values.astype(float)
-    x = np.arange(len(h))
+    try:
+        h = d["High"].values.flatten().astype(float)
+        l = d["Low"].values.flatten().astype(float)
+        v = d["Volume"].values.flatten().astype(float)
+        c = d["Close"].values.flatten().astype(float)
+        x = np.arange(len(h))
 
-    sh, ih, *_ = linregress(x, h)
-    sl, il, *_ = linregress(x, l)
+        # 線性回歸計算趨勢線
+        sh, ih, *_ = linregress(x, h)
+        sl, il, *_ = linregress(x, l)
+    except (ValueError, KeyError):
+        # 捕捉數據不足或回歸失敗（x 座標相同等問題）
+        return None
 
-    v_mean = np.mean(v[-6:-1]) if len(v) >= 6 else np.mean(v)
-
+    v_mean = np.mean(v[:-1]) if len(v) >= 2 else np.mean(v)
     hits = []
 
+    # 1. 三角收斂：高點下降 & 低點上升
     if config.get("tri") and sh < -0.003 and sl > 0.003:
         hits.append({"text": "📐三角收斂", "class": "badge-tri"})
 
+    # 2. 旗箱整理：上下軌趨於水平
     if config.get("box") and abs(sh) < 0.03 and abs(sl) < 0.03:
         hits.append({"text": "📦旗箱整理", "class": "badge-box"})
 
+    # 3. 今日爆量：今日成交量 > 均量 1.3 倍
     if config.get("vol") and v[-1] > v_mean * 1.3:
         hits.append({"text": "🚀今日爆量", "class": "badge-vol"})
 
     return {
         "labels": hits,
         "lines": (sh, ih, sl, il, x),
-        "price": round(float(df["Close"].iloc[-1]), 2),
+        "price": round(float(c[-1]), 2),
         "vol": int(v[-1] // 1000),
     }
 
@@ -104,7 +119,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 3. 側邊欄
+# 3. 側邊欄 (介面維持原樣)
 # ==========================================
 db = load_full_db()
 modes = [
@@ -158,10 +173,11 @@ elif run_now:
         and h_sid.strip() != ""
     )
 
-    targets = (
-        [(f"{h_sid.upper()}.TW", "個股"), (f"{h_sid.upper()}.TWO", "個股")]
-        if is_specific else list(db.items())
-    )
+    if is_specific:
+        # 修正：同時嘗試 .TW 與 .TWO (上市與上櫃)
+        targets = [(f"{h_sid.upper()}.TW", "個股"), (f"{h_sid.upper()}.TWO", "個股")]
+    else:
+        targets = list(db.items())
 
     mv_limit = t_min_v if mode.startswith("⚡") else h_min_v
     results = []
@@ -181,7 +197,7 @@ elif run_now:
                 results.append(res)
 
     if not results:
-        st.info("🔍 尚未符合條件的股票")
+        st.info("🔍 尚未符合條件的股票，或代號輸入錯誤。")
 
     for item in results:
         clean = item["sid"].split(".")[0]
@@ -212,7 +228,8 @@ elif run_now:
 
         with st.expander("📈 展開形態圖表"):
             d = item["df"].tail(30)
-            sh, ih, sl, il, x = item["lines"]
+            sh, ih, sl, il, x_reg = item["lines"]
+            
             fig = make_subplots(rows=1, cols=1)
             fig.add_candlestick(
                 x=d.index,
@@ -220,16 +237,21 @@ elif run_now:
                 high=d["High"],
                 low=d["Low"],
                 close=d["Close"],
+                name="K線"
             )
+            
+            # 繪製趨勢線 (對應最近 15 天)
             p = d.tail(15)
-            fig.add_scatter(x=p.index, y=sh * x + ih, line=dict(dash="dash"))
-            fig.add_scatter(x=p.index, y=sl * x + il, line=dict(dash="dot"))
+            fig.add_scatter(x=p.index, y=sh * x_reg + ih, name="壓力線", line=dict(dash="dash", color="rgba(214, 48, 49, 0.7)"))
+            fig.add_scatter(x=p.index, y=sl * x_reg + il, name="支撐線", line=dict(dash="dot", color="rgba(108, 92, 231, 0.7)"))
+            
             fig.update_layout(
-                height=400,
+                height=450,
                 xaxis_rangeslider_visible=False,
                 showlegend=False,
+                margin=dict(t=20, b=20, l=10, r=10)
             )
             st.plotly_chart(fig, use_container_width=True)
 
 else:
-    st.info("👈 請從左側選擇功能")
+    st.info("👈 請從左側選擇功能並點擊「開始掃描」")
