@@ -4,18 +4,15 @@ import numpy as np
 import yfinance as yf
 import plotly.graph_objects as go
 from scipy.stats import linregress
-try:
-    from streamlit_autorefresh import st_autorefresh
-except ImportError:
-    pass
+import sys
 from bs4 import BeautifulSoup
 import json, os, requests, time
 
 # ==========================================
-# 檢查運行環境：判斷是網頁還是 GitHub Actions
+# 檢查運行環境：最穩定的判斷方式
 # ==========================================
-# 透過 Streamlit 的內部屬性來判斷，最準確
-IS_STREAMLIT = st._is_running_with_streamlit
+# 檢查執行指令中是否包含 streamlit
+IS_STREAMLIT = "streamlit" in sys.argv[0] or any("streamlit" in arg for arg in sys.argv)
 
 # ==========================================
 # 0. 資料載入與多分類爬蟲邏輯
@@ -27,6 +24,7 @@ def update_json_database():
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     new_db = {}
     
+    # 上市(TAI) & 上櫃(TWO) 電子類股
     sector_ids = [2, 7, 24, 25, 26, 27, 28, 29, 30, 31] + list(range(40, 48))
     urls = [f"https://tw.stock.yahoo.com/class-quote?sectorId={sid}&exchange=TAI" for sid in sector_ids]
     otc_ids = list(range(153, 161))
@@ -50,17 +48,14 @@ def update_json_database():
         json.dump(new_db, f, ensure_ascii=False, indent=2)
     return new_db
 
-@st.cache_data(show_spinner=False)
-def get_full_stock_list():
+# 只有在需要時才載入資料 (Actions 或 Streamlit)
+def load_db():
     if not os.path.exists(DB_FILE):
         return update_json_database()
     try:
         with open(DB_FILE, 'r', encoding='utf-8') as f:
             return json.load(f)
     except: return {}
-
-# 1. 初始化資料 (僅在網頁模式或 Actions 執行時載入)
-db = get_full_stock_list()
 
 # ==========================================
 # 1. 形態分析引擎
@@ -90,9 +85,13 @@ def analyze_patterns(df, config, days=15):
     except: return None
 
 # ==========================================
-# 2. 介面設計 & 3. 掃描結果 (嚴格保護區塊)
+# 2. 執行邏輯分流
 # ==========================================
 if IS_STREAMLIT:
+    # --- 這裡只有網頁版會跑 ---
+    from streamlit_autorefresh import st_autorefresh
+    db = load_db()
+    
     st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
     st.markdown("""<style>.stApp { background-color: #f4f7f6; }.stock-card { background: white; padding: 20px; border-radius: 12px; margin-bottom: 20px; border-left: 8px solid #6c5ce7; box-shadow: 0 4px 10px rgba(0,0,0,0.05); }.badge { padding: 4px 10px; border-radius: 6px; font-size: 0.8rem; font-weight: bold; margin-right: 5px; color: white; }.badge-tri { background-color: #6c5ce7; }.badge-box { background-color: #2d3436; }.badge-vol { background-color: #d63031; }</style>""", unsafe_allow_html=True)
 
@@ -135,10 +134,9 @@ if IS_STREAMLIT:
         final_results = []
         with st.status(f"🔍 正在掃描 {len(targets)} 檔形態...", expanded=True) as status:
             p_bar = st.progress(0)
-            chunk_size = 30
-            for i in range(0, len(targets), chunk_size):
+            for i in range(0, len(targets), 30):
                 p_bar.progress(min(i / len(targets), 1.0))
-                chunk = targets[i : i + chunk_size]
+                chunk = targets[i : i + 30]
                 t_list = [t[0] for t in chunk]
                 try:
                     data = yf.download(t_list, period="2mo", group_by='ticker', progress=False)
@@ -171,11 +169,9 @@ if IS_STREAMLIT:
         else:
             st.info("💡 目前無符合形態的股票。")
 
-# ==========================================
-# 4. GitHub Actions 入口 (只有 python 執行時才觸發)
-# ==========================================
-if __name__ == "__main__":
-    if not IS_STREAMLIT:
-        print("🚀 [GitHub Actions] 偵測到指令模式，開始更新資料庫...")
+else:
+    # --- 這裡只有 GitHub Actions (純 Python) 會跑 ---
+    if __name__ == "__main__":
+        print("🚀 [GitHub Actions] 偵測到純指令環境，開始更新資料庫...")
         update_json_database()
-        print("✅ [GitHub Actions] 更新成功！")
+        print("✅ [GitHub Actions] 資料庫 JSON 更新完成！")
