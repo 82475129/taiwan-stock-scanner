@@ -5,21 +5,17 @@ import yfinance as yf
 import plotly.graph_objects as go
 from scipy.stats import linregress
 from streamlit_autorefresh import st_autorefresh
-from datetime import datetime
-import json
-import os
-import requests
+import json, os, requests, time
 from bs4 import BeautifulSoup
-import time
 
 # ==========================================
-# 0. 底層自動載入機制 (解決 0 檔問題)
+# 0. 底層強制載入機制 (確保不會顯示 0 檔)
 # ==========================================
 DB_FILE = "taiwan_electronic_stocks.json"
 
 @st.cache_data(show_spinner=False)
 def get_full_stock_list():
-    # 優先讀取本地，若無則啟動即時爬取
+    # 1. 檢查有無現成檔案
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, 'r', encoding='utf-8') as f:
@@ -27,6 +23,7 @@ def get_full_stock_list():
                 if len(data) > 0: return data
         except: pass
 
+    # 2. 若檔案不存在或為空，現場爬取 (確保底層有資料)
     sectors = {
         "TAI": {40: "半導體", 41: "電腦週邊", 42: "光電", 43: "通信網路", 44: "電子零組件", 45: "電子通路", 46: "資訊服務", 47: "其他電子"},
         "TWO": {153: "半導體", 154: "電腦週邊", 155: "光電", 156: "通信網路", 157: "電子零組件", 158: "電子通路", 159: "資訊服務", 160: "其他電子"}
@@ -34,8 +31,8 @@ def get_full_stock_list():
     full_db = {}
     headers = {'User-Agent': 'Mozilla/5.0'}
     
-    status_placeholder = st.empty()
-    status_placeholder.info("🚀 正在初始化底層資料庫，請稍候...")
+    status_p = st.empty()
+    status_p.warning("⚠️ 偵測到資料庫為空，正在底層自動抓取真實清單...")
     
     for ex, cats in sectors.items():
         for sid, cat_name in cats.items():
@@ -51,11 +48,7 @@ def get_full_stock_list():
                         full_db[f"{c.get_text(strip=True)}{suffix}"] = n.get_text(strip=True)
             except: pass
     
-    try:
-        with open(DB_FILE, 'w', encoding='utf-8') as f:
-            json.dump(full_db, f, ensure_ascii=False, indent=2)
-    except: pass
-    status_placeholder.empty()
+    status_p.empty()
     return full_db
 
 db = get_full_stock_list()
@@ -87,13 +80,14 @@ def analyze_patterns(df, config, days=15):
     except: return None
 
 # ==========================================
-# 2. 介面設計 (保持不變)
+# 2. 介面設計 (左側完整保留)
 # ==========================================
 st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
 st.markdown("""<style>.stApp { background-color: #f4f7f6; }.stock-card { background: white; padding: 16px; border-radius: 12px; margin-bottom: 15px; border-left: 6px solid #6c5ce7; box-shadow: 0 4px 10px rgba(0,0,0,0.06); }.badge { padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: bold; margin: 2px; color: white; display: inline-block; }.badge-tri { background-color: #6c5ce7; }.badge-box { background-color: #2d3436; }.badge-vol { background-color: #d63031; }</style>""", unsafe_allow_html=True)
 
 with st.sidebar:
     st.title("🎯 形態大師控制台")
+    # 這裡會顯示 force 抓到的數量
     st.success(f"📁 已載入：{len(db)} 檔電子股")
     selected_mode = st.radio("選擇模式", ["⚡ 今日即時監控 (自動)", "⏳ 歷史形態搜尋 (手動)", "🌐 所有股票連結"])
     st.divider()
@@ -114,7 +108,7 @@ with st.sidebar:
     else: run_now = False
 
 # ==========================================
-# 3. 掃描執行 (含網頁進度條)
+# 3. 網頁掃描進度顯示
 # ==========================================
 st.title("台股 Pro-X 形態大師")
 
@@ -124,13 +118,13 @@ if run_now:
     chunk_size = 50
     ticker_items = list(targets)
     
-    with st.status("🚀 正在執行全產業形態掃描...", expanded=True) as status:
+    with st.status("🚀 正在掃描全產業形態...", expanded=True) as status:
         p_bar = st.progress(0)
         for i in range(0, len(ticker_items), chunk_size):
             p_bar.progress(i / len(ticker_items))
             chunk = ticker_items[i : i + chunk_size]
             t_list = [t[0] for t in chunk]
-            status.write(f"正在掃描第 {i} ~ {min(i+chunk_size, len(ticker_items))} 檔...")
+            status.write(f"掃描中: 第 {i} ~ {min(i+chunk_size, len(ticker_items))} 檔...")
             
             try:
                 data = yf.download(t_list, period="2mo", group_by='ticker', progress=False)
@@ -145,15 +139,14 @@ if run_now:
                     except: continue
             except: continue
         p_bar.empty()
-        status.update(label="✅ 掃描完成！", state="complete", expanded=False)
+        status.update(label="✅ 掃描任務全部完成！", state="complete", expanded=False)
 
     if not final_results: st.info("目前無符合標的。")
     else:
         for item in final_results:
-            # 卡片渲染
             p_color = "#d63031" if item['price'] >= item['prev_close'] else "#27ae60"
             b_html = "".join([f'<span class="badge {l["class"]}">{l["text"]}</span>' for l in item['labels']])
-            st.markdown(f"""<div class="stock-card"><b>{item['sid']} {item['name']}</b> <span style="color:{p_color}; float:right; font-size:1.2rem;">${item['price']}</span><br><small>量: {item['vol']}張 | MA20: {item['ma20']}</small><br>{b_html}</div>""", unsafe_allow_html=True)
+            st.markdown(f"""<div class="stock-card"><b>{item['sid']} {item['name']}</b> <span style="color:{p_color}; float:right;">${item['price']}</span><br><small>量: {item['vol']}張 | MA20: {item['ma20']}</small><br>{b_html}</div>""", unsafe_allow_html=True)
             with st.expander("📈 展開圖表"):
                 d_p = item['df'].tail(30)
                 sh, ih, sl, il, x_r = item['lines']
