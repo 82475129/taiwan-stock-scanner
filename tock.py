@@ -63,6 +63,7 @@ def fetch_all_electronic_stocks(force_save=False):
 
 def load_db():
     if should_update_db():
+        st.info("🔄 正在更新電子產業資料...")
         db = fetch_all_electronic_stocks(force_save=True)
     else:
         with open(DB_FILE, 'r', encoding='utf-8') as f:
@@ -85,16 +86,13 @@ def _analyze_pattern_logic(df):
         return [], (0, 0, 0, 0), False, False, False
 
     d = df.tail(45).copy()
-    first_high, last_high = d['High'].iloc[0], d['High'].iloc[-1]
-    first_low, last_low = d['Low'].iloc[0], d['Low'].iloc[-1]
-
-    is_tri_trend = (last_high < first_high) and (last_low > first_low)
     x = np.arange(len(d))
     h, l, v = d['High'].values.flatten(), d['Low'].values.flatten(), d['Volume'].values.flatten()
     sh, ih, _, _, _ = linregress(x, h)
     sl, il, _, _, _ = linregress(x, l)
 
-    is_tri = is_tri_trend or (sh < -0.0001 and sl > 0.0001)
+    # 形態判定
+    is_tri = (sh < -0.0001 and sl > 0.0001)
     is_box = (abs(sh) < 0.0006) and (abs(sl) < 0.0006)
     vol_mean = v[-10:-1].mean() if len(v) > 10 else v.mean()
     is_vol = v[-1] > (vol_mean * 1.4)
@@ -103,15 +101,12 @@ def _analyze_pattern_logic(df):
     if is_tri: labels.append("📐 三角收斂")
     if is_box: labels.append("📦 旗箱矩形")
     if is_vol: labels.append("🚀 爆量突破")
-
     return labels, (sh, ih, sl, il), is_tri, is_box, is_vol
 
 # ==========================================
-# 3. 分析引擎 (修正參數傳遞)
+# 3. 分析引擎 (核心邏輯)
 # ==========================================
-def execute_engine(cats_logic, pats_logic, input_sid, max_limit, min_vol_val):
-    cats = [c for c, v in cats_logic.items() if v]
-    
+def execute_engine(cats, pats, input_sid, max_limit, min_vol_val):
     if not cats and not input_sid:
         return [], "🔍 形態掃描結果"
 
@@ -137,9 +132,9 @@ def execute_engine(cats_logic, pats_logic, input_sid, max_limit, min_vol_val):
             
             labels, lines, i_tri, i_bx, i_vo = _analyze_pattern_logic(df)
             selected_labels = []
-            if pats_logic['tri'] and i_tri: selected_labels.append("📐 三角收斂")
-            if pats_logic['box'] and i_bx: selected_labels.append("📦 旗箱矩形")
-            if pats_logic['vol'] and i_vo: selected_labels.append("🚀 爆量突破")
+            if pats.get('tri') and i_tri: selected_labels.append("📐 三角收斂")
+            if pats.get('box') and i_bx: selected_labels.append("📦 旗箱矩形")
+            if pats.get('vol') and i_vo: selected_labels.append("🚀 爆量突破")
             
             if input_sid: selected_labels = labels
             
@@ -157,17 +152,12 @@ def execute_engine(cats_logic, pats_logic, input_sid, max_limit, min_vol_val):
             res = f.result()
             if res: results.append(res)
 
-    title = "🔍 篩選結果"
-    if pats_logic['vol'] and not pats_logic['tri'] and not pats_logic['box']: title = "🔍 爆量突破掃描"
-    
-    return results, title
+    return results, "🔍 掃描結果"
 
 # ==========================================
-# 4. 介面與側邊欄
+# 4. 介面設定
 # ==========================================
 st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
-
-# CSS 樣式
 st.markdown("""
     <style>
     .stApp { background: #f9f9fb; }
@@ -180,46 +170,68 @@ st.markdown("""
 st.markdown(f"""
     <div class="hero-section">
         <h1 style='color: #6c5ce7; margin:0;'>🎯 台股 Pro-X 形態大師</h1>
-        <p style='color: #636e72; margin-top:10px;'>專業級大數據掃描系統 | 電子與三角收斂監控</p>
+        <p style='color: #636e72; margin-top:10px;'>專業級大數據掃描系統 | 同步時間：{datetime.now().strftime('%H:%M:%S')}</p>
     </div>
 """, unsafe_allow_html=True)
 
+# ==========================================
+# 5. 側邊欄 (手動+自動全保留)
+# ==========================================
 with st.sidebar:
     st.header("⚙️ 設定中心")
-    auto_toggle = st.toggle("啟動自動巡航", value=False)
+    
+    # --- A. 自動巡航 ---
+    auto_toggle = st.toggle("啟動自動巡航 (5分/次)", value=False)
     if auto_toggle:
         st_autorefresh(interval=300000, key="auto_refresh")
 
-    with st.expander("監控模式設定", expanded=True):
-        mode_prefix = "自動" if auto_toggle else "手動"
-        s_elec = st.checkbox(f"{mode_prefix}-電子類股", value=True)
-        s_food = st.checkbox(f"{mode_prefix}-食品類股", value=False)
-        s_other = st.checkbox(f"{mode_prefix}-其他類股", value=False)
+    with st.expander("📡 A. 自動監控設定", expanded=auto_toggle):
+        a_elec = st.checkbox("自動-電子類股", value=True)
+        a_food = st.checkbox("自動-食品類股", value=False)
+        a_other = st.checkbox("自動-其他類股", value=False)
         st.write("---")
-        s_tri = st.checkbox(f"{mode_prefix}-偵測三角", value=False)
-        s_box = st.checkbox(f"{mode_prefix}-偵測旗箱", value=False)
-        s_vol = st.checkbox(f"{mode_prefix}-偵測爆量", value=True)
+        a_tri = st.checkbox("自動-監控三角", value=False)
+        a_box = st.checkbox("自動-監控旗箱", value=False)
+        a_vol = st.checkbox("自動-監控爆量", value=True)
 
-    input_sid = st.text_input("輸入個股代號", placeholder="例如: 2330")
+    st.divider()
+
+    # --- B. 手動掃描 ---
+    with st.expander("🚀 B. 手動掃描設定", expanded=not auto_toggle):
+        m_elec = st.checkbox("手動-電子類股", value=True)
+        m_food = st.checkbox("手動-食品類股", value=False)
+        m_other = st.checkbox("手動-其他類股", value=False)
+        st.write("---")
+        m_tri = st.checkbox("手動-偵測三角", value=False)
+        m_box = st.checkbox("手動-偵測旗箱", value=False)
+        m_vol = st.checkbox("手動-偵測爆量", value=True)
+
+    st.divider()
+    input_sid = st.text_input("輸入個股代號 (優先查詢)", placeholder="例如: 2330")
     max_limit = st.slider("掃描上限", 50, 1000, 200)
     min_vol_val = st.number_input("最低張數門檻", value=300)
     
-    run_search = st.button("🚀 立即搜尋", use_container_width=True, type="primary")
+    run_search = st.button("🚀 執行手動搜尋", use_container_width=True, type="primary")
 
 # ==========================================
-# 5. 執行邏輯
+# 6. 主程式執行邏輯
 # ==========================================
+# 決定要用哪一組設定 (自動或手動)
+if auto_toggle:
+    current_cats = [c for c, v in {"電子": a_elec, "食品": a_food, "其他": a_other}.items() if v]
+    current_pats = {"tri": a_tri, "box": a_box, "vol": a_vol}
+else:
+    current_cats = [c for c, v in {"電子": m_elec, "食品": m_food, "其他": m_other}.items() if v]
+    current_pats = {"tri": m_tri, "box": m_box, "vol": m_vol}
+
+# 觸發條件：按下按鈕、自動巡航開啟、或是輸入了個股代號
 if run_search or auto_toggle or input_sid:
-    # 準備參數包
-    cats_payload = {"電子": s_elec, "食品": s_food, "其他": s_other}
-    pats_payload = {"tri": s_tri, "box": s_box, "vol": s_vol}
-    
-    with st.status("🔍 正在掃描市場數據...", expanded=True) as status:
-        final_list, scan_title = execute_engine(cats_payload, pats_payload, input_sid, max_limit, min_vol_val)
+    with st.status("🔍 市場掃描中...", expanded=True) as status:
+        final_list, scan_title = execute_engine(current_cats, current_pats, input_sid, max_limit, min_vol_val)
         
         if final_list:
             st.subheader(scan_title)
-            # 表單顯示
+            # 表格化顯示
             table_data = []
             for item in final_list:
                 badges = " ".join([f'<span class="badge {"badge-tri" if "三角" in l else "badge-vol" if "爆量" in l else "badge-box"}">{l}</span>' for l in item['labels']])
@@ -229,19 +241,18 @@ if run_search or auto_toggle or input_sid:
                 })
             st.write(pd.DataFrame(table_data).to_html(escape=False, index=False), unsafe_allow_html=True)
 
-            # 圖表顯示
-            st.divider()
+            # K線圖顯示
             for item in final_list:
-                with st.expander(f"📊 {item['sid']} {item['name']} - 查看分析圖"):
+                with st.expander(f"📊 {item['sid']} {item['name']} 詳情"):
                     d, (sh, ih, sl, il) = item['df'], item['lines']
-                    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3])
-                    fig.add_trace(go.Candlestick(x=d.index, open=d['Open'], high=d['High'], low=d['Low'], close=d['Close'], name="K線"), row=1, col=1)
+                    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05)
+                    fig.add_trace(go.Candlestick(x=d.index, open=d['Open'], high=d['High'], low=d['Low'], close=d['Close']), row=1, col=1)
                     xv = np.arange(len(d))
-                    fig.add_trace(go.Scatter(x=d.index, y=sh * xv + ih, line=dict(color='red', width=2, dash='dash'), name="壓力線"), row=1, col=1)
-                    fig.add_trace(go.Scatter(x=d.index, y=sl * xv + il, line=dict(color='green', width=2, dash='dot'), name="支撐線"), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=d.index, y=sh * xv + ih, line=dict(color='red', width=2, dash='dash')), row=1, col=1)
+                    fig.add_trace(go.Scatter(x=d.index, y=sl * xv + il, line=dict(color='green', width=2, dash='dot')), row=1, col=1)
                     fig.add_trace(go.Bar(x=d.index, y=d['Volume'], marker_color='blue', opacity=0.4), row=2, col=1)
-                    fig.update_layout(height=400, template="plotly_white", xaxis_rangeslider_visible=False, showlegend=False)
+                    fig.update_layout(height=450, template="plotly_white", xaxis_rangeslider_visible=False, showlegend=False)
                     st.plotly_chart(fig, use_container_width=True)
         else:
-            st.info("符合條件的股票較少，建議調整門檻或勾選更多形態。")
-        status.update(label=f"✅ 掃描完成！發現 {len(final_list)} 檔標的", state="complete")
+            st.info("未發現符合形態的個股，請調整篩選條件。")
+        status.update(label=f"✅ 完成！發現 {len(final_list)} 檔標的", state="complete")
