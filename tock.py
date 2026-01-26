@@ -8,7 +8,7 @@ from datetime import datetime
 from streamlit_autorefresh import st_autorefresh
 
 # ==========================================
-# 0. 資料庫核心：讀取 JSON（支援細分類）
+# 0. 資料庫核心
 # ==========================================
 DB_FILE = "electronic_stocks_db.json"
 
@@ -17,7 +17,7 @@ def load_organized_db():
         st.warning("找不到 electronic_stocks_db.json，使用預設測試資料")
         return {
             "電子-半導體": {"2330.TW": "台積電", "2303.TW": "聯電"},
-            "電子-零組件": {"2313.TW": "華通", "2059.TW": "川湖"},
+            "電子-零組件": {"2324.TW": "仁寶", "2353.TW": "宏碁", "2395.TW": "研華", "3022.TW": "威強電"},
             "電子-其他": {"2317.TW": "鴻海"}
         }
     
@@ -27,7 +27,6 @@ def load_organized_db():
         
         organized = {}
         for sid, info in raw_data.items():
-            # 如果 generate_db.py 已細分 category 如 "電子-半導體"
             cat = info.get("category", "電子-其他")
             if cat not in organized:
                 organized[cat] = {}
@@ -37,7 +36,7 @@ def load_organized_db():
         st.error(f"讀取 JSON 失敗：{e}")
         return {"錯誤": {"無資料": "請檢查 JSON 檔案"}}
 
-@st.cache_data(ttl=300)  # 5 分鐘快取
+@st.cache_data(ttl=300)
 def get_k_line_data(sid: str) -> pd.DataFrame | None:
     try:
         df = yf.download(sid, period="60d", progress=False, auto_adjust=True)
@@ -50,7 +49,7 @@ def get_k_line_data(sid: str) -> pd.DataFrame | None:
         return None
 
 # ==========================================
-# 1. 頁面設定與 CSS
+# 頁面設定與 CSS
 # ==========================================
 st.set_page_config(page_title="Pro-X 形態大師", layout="wide", initial_sidebar_state="expanded")
 
@@ -80,20 +79,17 @@ st.markdown("""
         font-size: 13.5px; font-weight: 600; margin: 8px 6px 0 0;
     }
     .tag-pattern { background: #f3e8ff; color: #7e22ce; }
-    .tag-vol { background: #fee2e2; color: #dc2626; }
-    .tag-up { background: #dcfce7; color: #15803d; }
-    .tag-down { background: #fee2e2; color: #b91c1c; }
 </style>
 """, unsafe_allow_html=True)
 
 # ==========================================
-# 2. 側邊欄
+# 側邊欄
 # ==========================================
 db_groups = load_organized_db()
 
 with st.sidebar:
     st.markdown("<h1 style='color:#6366f1;'>🎯 形態大師控制台</h1>", unsafe_allow_html=True)
-    st.caption("電子股即時形態監控")
+    st.caption("電子股形態監控")
     st.divider()
     
     mode = st.radio("功能模式", [
@@ -106,16 +102,16 @@ with st.sidebar:
     search_q = st.text_input("🔍 過濾代號／名稱", placeholder="2330 / 台積電")
     
     st.divider()
-    st_autorefresh(interval=600000, key="autorefresh")  # 10分鐘自動刷新
+    st_autorefresh(interval=600000, key="autorefresh")
     if st.button("🔄 強制刷新", use_container_width=True):
         st.cache_data.clear()
         st.rerun()
 
 # ==========================================
-# 3. 主畫面
+# 主畫面
 # ==========================================
 st.markdown("<h2 style='text-align:center; color:#1e293b;'>🚀 智能電子股形態監控</h2>", unsafe_allow_html=True)
-st.caption(f"資料最後更新：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}（yfinance + JSON）")
+st.caption(f"資料最後更新：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 final_groups = {}
 search_q = (search_q or "").strip().upper()
@@ -130,21 +126,19 @@ else:
     final_groups = db_groups
 
 if not final_groups:
-    st.info("目前沒有符合條件的股票，請調整搜尋或檢查 JSON 資料庫。")
+    st.info("目前沒有符合條件的股票")
 else:
     for category, stocks in final_groups.items():
         st.markdown(f'<div class="sector-header">📂 {category}</div>', unsafe_allow_html=True)
         
-        # 兩欄式排列（若股票 >=2 則分欄）
-        cols = st.columns(2) if len(stocks) >= 2 else [st.container() for _ in range(1)]
+        cols = st.columns(2) if len(stocks) >= 2 else [st.container()]
         col_idx = 0
         
         for sid, name in stocks.items():
             with cols[col_idx % len(cols)]:
-                # 示範標籤（之後可換成真實偵測）
+                # 只保留基本形態標籤（已移除爆量、成交量）
                 tags = [
-                    '<span class="tag tag-pattern">📐 三角收斂</span>',
-                    '<span class="tag tag-vol">🚀 放量</span>'
+                    '<span class="tag tag-pattern">📐 三角收斂</span>'
                 ]
                 
                 df = get_k_line_data(sid)
@@ -172,8 +166,8 @@ else:
                             x=df.index,
                             open=df['Open'], high=df['High'],
                             low=df['Low'], close=df['Close'],
-                            increasing_line_color='#ef4444',  # 紅漲
-                            decreasing_line_color='#22c55e'   # 綠跌
+                            increasing_line_color='#ef4444',
+                            decreasing_line_color='#22c55e'
                         )])
                         fig.update_layout(
                             height=380,
@@ -187,9 +181,9 @@ else:
                         )
                         st.plotly_chart(fig, use_container_width=True, key=f"chart_{sid}")
                     else:
-                        st.warning(f"無法載入 {sid} 資料（非交易日或代號異常）")
+                        st.warning(f"無法載入 {sid} 資料")
             
             col_idx += 1
 
 st.markdown("---")
-st.caption("提示：請定期執行 generate_db.py 更新 electronic_stocks_db.json 以保持最新電子股清單。")
+st.caption("提示：定期執行 generate_db.py 更新股票清單")
