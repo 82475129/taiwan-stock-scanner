@@ -2,10 +2,10 @@ name: 自動更新台股電子股資料庫 JSON
 
 on:
   schedule:
-    - cron: '0 0 * * *'  # 每天 UTC 00:00（台灣時間早上 08:00）執行一次
+    - cron: '0 0 * * *'  # 每天 UTC 00:00 → 台灣時間早上 08:00
   push:
-    branches: [ main ]   # 每次 push main 分支也執行
-  workflow_dispatch:     # 允許手動觸發
+    branches: [ main ]   # 推到 main 時也執行（可選，方便測試）
+  workflow_dispatch:     # 允許手動從 Actions 頁面觸發
 
 jobs:
   update-db:
@@ -14,24 +14,37 @@ jobs:
     steps:
     - name: 拉取儲存庫
       uses: actions/checkout@v4
+      with:
+        fetch-depth: 0  # 完整歷史，方便 commit
 
-    - name: 設定 Python
+    - name: 設定 Python 環境
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
 
-    - name: 安裝依賴套件
+    - name: 安裝必要套件
       run: |
         python -m pip install --upgrade pip
-        pip install yfinance requests beautifulsoup4 pandas
+        pip install requests beautifulsoup4
 
-    - name: 執行程式產生 JSON
-      run: python stock.py   # 如果你的程式檔名不同，請改成正確名稱
+    - name: 執行資料庫更新腳本
+      run: python generate_db.py
+      # 如果你的腳本檔名不同，請改成正確的，例如 python update_db.py
 
-    - name: Commit & Push 更新後的 JSON
+    - name: 檢查是否有變更並 Commit & Push
       run: |
-        git config --global user.name "GitHub Action"
-        git config --global user.email "action@github.com"
-        git add electronic_stocks_db.json
-        git commit -m "自動更新電子股資料庫 JSON [skip ci]" || echo "No changes to commit"
-        git push
+        git config --global user.name "GitHub Actions Bot"
+        git config --global user.email "actions@github.com"
+        
+        git add electronic_stocks_db.json || true
+        
+        if git diff --cached --quiet; then
+          echo "JSON 檔案沒有變更，跳過 commit"
+        else
+          git commit -m "自動更新電子股資料庫 JSON $(date '+%Y-%m-%d')" || echo "Commit 失敗，但繼續"
+          git push origin HEAD:main
+        fi
+
+    - name: 顯示最後幾行 log（除錯用）
+      if: always()
+      run: tail -n 20 generate_db.py 的輸出（如果有 print）或直接 echo "完成"
