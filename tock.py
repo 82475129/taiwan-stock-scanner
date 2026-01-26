@@ -87,7 +87,6 @@ def _analyze_pattern_logic(df):
 
     d = df.tail(45).copy()
     x = np.arange(len(d))
-    # 處理多層索引或單層索引數據
     h = d['High'].values.flatten()
     l = d['Low'].values.flatten()
     v = d['Volume'].values.flatten()
@@ -118,7 +117,6 @@ def execute_engine(cats, pats, input_sid, max_limit, min_vol_val):
 
     if input_sid:
         sid = input_sid.strip().upper()
-        # 同時嘗試 .TW 與 .TWO
         targets = [(f"{sid}.TW", {"name": "查詢標的", "category": "手動"}),
                    (f"{sid}.TWO", {"name": "查詢標的", "category": "手動"})]
     else:
@@ -168,6 +166,9 @@ st.markdown("""
     .hero-section { background: white; padding: 25px; border-radius: 15px; text-align: center; border-bottom: 5px solid #6c5ce7; box-shadow: 0 4px 15px rgba(0,0,0,0.05); margin-bottom: 20px; }
     .badge { padding: 4px 10px; border-radius: 5px; font-size: 12px; font-weight: bold; color: white; margin-left: 6px; }
     .badge-tri { background: #6c5ce7; } .badge-vol { background: #ff7675; } .badge-box { background: #2d3436; }
+    /* 讓表格內的超連結顏色亮一點 */
+    a { color: #6c5ce7; text-decoration: none; font-weight: bold; }
+    a:hover { text-decoration: underline; }
     </style>
 """, unsafe_allow_html=True)
 
@@ -188,7 +189,6 @@ with st.sidebar:
     if auto_toggle:
         st_autorefresh(interval=300000, key="auto_refresh")
 
-    # A. 自動設定區
     with st.expander("📡 A. 自動監控設定", expanded=auto_toggle):
         a_elec = st.checkbox("自動-電子類股", value=True, key="a_e")
         a_food = st.checkbox("自動-食品類股", value=False, key="a_f")
@@ -200,7 +200,6 @@ with st.sidebar:
 
     st.divider()
 
-    # B. 手動設定區
     with st.expander("🚀 B. 手動掃描設定", expanded=not auto_toggle):
         m_elec = st.checkbox("手動-電子類股", value=True, key="m_e")
         m_food = st.checkbox("手動-食品類股", value=False, key="m_f")
@@ -218,9 +217,8 @@ with st.sidebar:
     run_search = st.button("🚀 執行手動搜尋", use_container_width=True, type="primary")
 
 # ==========================================
-# 6. 主程式執行
+# 6. 主程式執行邏輯
 # ==========================================
-# 根據開關決定邏輯參數
 if auto_toggle:
     current_cats = [c for c, v in {"電子": a_elec, "食品": a_food, "其他": a_other}.items() if v]
     current_pats = {"tri": a_tri, "box": a_box, "vol": a_vol}
@@ -228,45 +226,51 @@ else:
     current_cats = [c for c, v in {"電子": m_elec, "食品": m_food, "其他": m_other}.items() if v]
     current_pats = {"tri": m_tri, "box": m_box, "vol": m_vol}
 
-# 觸發掃描
 if run_search or auto_toggle or input_sid:
-    with st.status("🔍 市場大數據掃描中...", expanded=True) as status:
+    with st.status("🔍 市場數據掃描中...", expanded=True) as status:
         final_list, scan_title = execute_engine(current_cats, current_pats, input_sid, max_limit, min_vol_val)
         
         if final_list:
             st.subheader(scan_title)
-            # 顯示表格
+            
+            # --- 關鍵修正：產生含連結的代號表格 ---
             table_data = []
             for item in final_list:
+                sid_raw = item['sid']
+                # 建立 Yahoo 股市連結
+                # sid_raw 格式可能是 2330.TW，Yahoo 網址只需要前面的數字
+                clean_sid = sid_raw.split('.')[0]
+                yahoo_url = f"https://tw.stock.yahoo.com/quote/{clean_sid}"
+                linked_sid = f'<a href="{yahoo_url}" target="_blank">{sid_raw}</a>'
+                
                 badges = " ".join([f'<span class="badge {"badge-tri" if "三角" in l else "badge-vol" if "爆量" in l else "badge-box"}">{l}</span>' for l in item['labels']])
+                
                 table_data.append({
-                    "代號": item['sid'], "名稱": item['name'], "現價": f"{item['price']:.2f}",
-                    "成交量(張)": item['vol'], "形態": badges
+                    "代號": linked_sid,
+                    "名稱": item['name'],
+                    "現價": f"{item['price']:.2f}",
+                    "成交量(張)": item['vol'],
+                    "形態標籤": badges
                 })
-            st.write(pd.DataFrame(table_data).to_html(escape=False, index=False), unsafe_allow_html=True)
+            
+            # 使用 HTML 渲染表格以支持超連結
+            df_html = pd.DataFrame(table_data).to_html(escape=False, index=False)
+            st.write(df_html, unsafe_allow_html=True)
 
-            # 顯示 K 線圖
+            # 繪製 K 線圖
             st.divider()
             for item in final_list:
                 with st.expander(f"📊 {item['sid']} {item['name']} - 形態細節"):
                     d, (sh, ih, sl, il) = item['df'], item['lines']
                     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.05)
-                    
-                    # 蠟燭圖
                     fig.add_trace(go.Candlestick(x=d.index, open=d['Open'], high=d['High'], low=d['Low'], close=d['Close']), row=1, col=1)
-                    
-                    # 壓力支撐線
                     xv = np.arange(len(d))
                     fig.add_trace(go.Scatter(x=d.index, y=sh * xv + ih, line=dict(color='red', width=2, dash='dash')), row=1, col=1)
                     fig.add_trace(go.Scatter(x=d.index, y=sl * xv + il, line=dict(color='green', width=2, dash='dot')), row=1, col=1)
-                    
-                    # 成交量
                     fig.add_trace(go.Bar(x=d.index, y=d['Volume'], marker_color='blue', opacity=0.4), row=2, col=1)
-                    
                     fig.update_layout(height=450, template="plotly_white", xaxis_rangeslider_visible=False, showlegend=False, margin=dict(l=10,r=10,t=10,b=10))
                     
-                    # 關鍵修正：加上唯一 key 防止 Duplicate ID 錯誤
-                    st.plotly_chart(fig, use_container_width=True, key=f"plotly_{item['sid']}")
+                    st.plotly_chart(fig, use_container_width=True, key=f"plot_{item['sid']}")
         else:
-            st.info("目前的條件下未發現符合的個股，請調整篩選門檻。")
-        status.update(label=f"✅ 掃描完成！發現 {len(final_list)} 檔標的", state="complete")
+            st.info("目前的條件下未發現符合的個股。")
+        status.update(label=f"✅ 完成！發現 {len(final_list)} 檔標的", state="complete")
