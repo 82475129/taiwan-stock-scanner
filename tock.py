@@ -7,49 +7,62 @@ from scipy.stats import linregress
 from streamlit_autorefresh import st_autorefresh
 import json, os, requests, time
 from bs4 import BeautifulSoup
+from tqdm import tqdm
 
 # ==========================================
-# 0. 底層強制載入機制 (確保不會顯示 0 檔)
+# 0. 配置與資料
 # ==========================================
+st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
 DB_FILE = "taiwan_electronic_stocks.json"
 
+# -----------------------------
+# 載入或抓取電子股資料
+# -----------------------------
 @st.cache_data(show_spinner=False)
 def get_full_stock_list():
-    # 1. 檢查有無現成檔案
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, 'r', encoding='utf-8') as f:
                 data = json.load(f)
                 if len(data) > 0: return data
         except: pass
-
-    # 2. 若檔案不存在或為空，現場爬取 (確保底層有資料)
-    sectors = {
-        "TAI": {40: "半導體", 41: "電腦週邊", 42: "光電", 43: "通信網路", 44: "電子零組件", 45: "電子通路", 46: "資訊服務", 47: "其他電子"},
-        "TWO": {153: "半導體", 154: "電腦週邊", 155: "光電", 156: "通信網路", 157: "電子零組件", 158: "電子通路", 159: "資訊服務", 160: "其他電子"}
+    
+    SECTOR_MAP = {
+        "TAI": {40: "半導體", 41: "電腦週邊", 42: "光電", 43: "通信網路",
+                44: "電子零組件", 45: "電子通路", 46: "資訊服務", 47: "其他電子"},
+        "TWO": {153: "半導體", 154: "電腦週邊", 155: "光電", 156: "通信網路",
+                157: "電子零組件", 158: "電子通路", 159: "資訊服務", 160: "其他電子"}
     }
-    full_db = {}
+    db_result = {}
     headers = {'User-Agent': 'Mozilla/5.0'}
-    
+
     status_p = st.empty()
-    status_p.warning("⚠️ 偵測到資料庫為空，正在底層自動抓取真實清單...")
-    
-    for ex, cats in sectors.items():
-        for sid, cat_name in cats.items():
+    status_p.warning("⚠️ 偵測到資料庫為空，正在抓取真實電子股清單...")
+
+    for exchange, sectors in SECTOR_MAP.items():
+        for sector_id, sector_name in sectors.items():
+            url = f"https://tw.stock.yahoo.com/class-quote?sectorId={sector_id}&exchange={exchange}"
             try:
-                url = f"https://tw.stock.yahoo.com/class-quote?sectorId={sid}&exchange={ex}"
                 resp = requests.get(url, headers=headers, timeout=10)
                 soup = BeautifulSoup(resp.text, 'html.parser')
                 rows = soup.select('div[class*="table-row"]')
                 for row in rows:
-                    c, n = row.select_one('span[class*="C(#7c7e80)"]'), row.select_one('div[class*="Lh(20px)"]')
-                    if c and n:
-                        suffix = ".TW" if ex == "TAI" else ".TWO"
-                        full_db[f"{c.get_text(strip=True)}{suffix}"] = n.get_text(strip=True)
-            except: pass
+                    code_el = row.select_one('span[class*="C(#7c7e80)"]')
+                    name_el = row.select_one('div[class*="Lh(20px)"]')
+                    if code_el and name_el:
+                        suffix = ".TW" if exchange == "TAI" else ".TWO"
+                        db_result[f"{code_el.get_text(strip=True)}{suffix}"] = name_el.get_text(strip=True)
+            except: continue
+            time.sleep(0.2)
     
     status_p.empty()
-    return full_db
+    
+    try:
+        with open(DB_FILE, 'w', encoding='utf-8') as f:
+            json.dump(db_result, f, ensure_ascii=False, indent=2)
+    except: pass
+
+    return db_result
 
 db = get_full_stock_list()
 
@@ -80,14 +93,21 @@ def analyze_patterns(df, config, days=15):
     except: return None
 
 # ==========================================
-# 2. 介面設計 (左側完整保留)
+# 2. 介面設計
 # ==========================================
-st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
-st.markdown("""<style>.stApp { background-color: #f4f7f6; }.stock-card { background: white; padding: 16px; border-radius: 12px; margin-bottom: 15px; border-left: 6px solid #6c5ce7; box-shadow: 0 4px 10px rgba(0,0,0,0.06); }.badge { padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: bold; margin: 2px; color: white; display: inline-block; }.badge-tri { background-color: #6c5ce7; }.badge-box { background-color: #2d3436; }.badge-vol { background-color: #d63031; }</style>""", unsafe_allow_html=True)
+st.markdown("""
+<style>
+.stApp { background-color: #f4f7f6; }
+.stock-card { background: white; padding: 16px; border-radius: 12px; margin-bottom: 15px; border-left: 6px solid #6c5ce7; box-shadow: 0 4px 10px rgba(0,0,0,0.06); }
+.badge { padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: bold; margin: 2px; color: white; display: inline-block; }
+.badge-tri { background-color: #6c5ce7; }
+.badge-box { background-color: #2d3436; }
+.badge-vol { background-color: #d63031; }
+</style>
+""", unsafe_allow_html=True)
 
 with st.sidebar:
     st.title("🎯 形態大師控制台")
-    # 這裡會顯示 force 抓到的數量
     st.success(f"📁 已載入：{len(db)} 檔電子股")
     selected_mode = st.radio("選擇模式", ["⚡ 今日即時監控 (自動)", "⏳ 歷史形態搜尋 (手動)", "🌐 所有股票連結"])
     st.divider()
@@ -105,14 +125,16 @@ with st.sidebar:
         h_sid = st.text_input("輸入代號")
         current_config = {'tri': True, 'box': True, 'vol': True, 'use_ma': False}
         run_now = st.button("🚀 開始掃描", type="primary")
-    else: run_now = False
+    else:
+        run_now = False
 
-# ==========================================
-# 3. 網頁掃描進度顯示
-# ==========================================
 st.title("台股 Pro-X 形態大師")
 
-if run_now:
+# ==========================================
+# 3. 掃描邏輯 / 股票連結模式
+# ==========================================
+if run_now and selected_mode != "🌐 所有股票連結":
+    # 舊掃描邏輯
     targets = [(f"{h_sid.upper()}.TW", h_sid.upper())] if ("⏳" in selected_mode and h_sid) else list(db.items())
     final_results = []
     chunk_size = 50
@@ -141,7 +163,8 @@ if run_now:
         p_bar.empty()
         status.update(label="✅ 掃描任務全部完成！", state="complete", expanded=False)
 
-    if not final_results: st.info("目前無符合標的。")
+    if not final_results:
+        st.info("目前無符合標的。")
     else:
         for item in final_results:
             p_color = "#d63031" if item['price'] >= item['prev_close'] else "#27ae60"
@@ -156,3 +179,13 @@ if run_now:
                 fig.add_trace(go.Scatter(x=d_p.tail(15).index, y=sl*x_r+il, line=dict(color='#2ed573', dash='dot')))
                 fig.update_layout(height=400, template="plotly_white", showlegend=False, xaxis_rangeslider_visible=False)
                 st.plotly_chart(fig, use_container_width=True)
+
+# -----------------------------
+# 所有股票連結模式
+# -----------------------------
+if selected_mode == "🌐 所有股票連結":
+    st.info("點擊下方股票代號即可跳轉到 Yahoo 股價頁面")
+    for sid, name in db.items():
+        suffix = "TAI" if ".TW" in sid else "TWO"
+        url = f"https://tw.stock.yahoo.com/quote/{sid}"
+        st.markdown(f"- [{sid} {name}]({url})", unsafe_allow_html=True)
