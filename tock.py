@@ -11,8 +11,8 @@ import os, json
 # ==========================================
 st.set_page_config(page_title="台股 Pro 旗艦戰情室", layout="wide")
 
-if 'favorites' not in st.session_state: st.session_state.favorites = set() 
-if 'results_data' not in st.session_state: st.session_state.results_data = [] 
+if 'favorites' not in st.session_state: st.session_state.favorites = set()
+if 'results_data' not in st.session_state: st.session_state.results_data = []
 if 'last_config_key' not in st.session_state: st.session_state.last_config_key = ""
 
 @st.cache_data(ttl=3600)
@@ -25,39 +25,63 @@ def load_db():
     return {"2330.TW": "台積電", "2603.TW": "長榮"}
 
 # ==========================================
-# 2. 核心分析引擎 (個股優先顯示)
+# 2. 核心分析引擎
 # ==========================================
 def run_analysis(sid, name, df, config, is_manual=False):
     if df is None or df.empty: return None
     df = df.copy().dropna()
-    if len(df) < 5: return None  # 避免完全空資料
+    if len(df) < 5: return None
 
     c = float(df["Close"].iloc[-1])
+    v_last = df["Volume"].iloc[-1]
 
-    # 個股優先顯示，訊號欄位保留
-    active_hits = ["🔍個股優先顯示"]
+    # 訊號計算 (保留但手動模式不篩選)
+    lb = config.get("p_lookback", 15)
+    x = np.arange(min(lb, len(df)))
+    h, l = df["High"].iloc[-len(x):].values, df["Low"].iloc[-len(x):].values
+    sh, ih, _, _, _ = linregress(x, h)
+    sl, il, _, _, _ = linregress(x, l)
 
-    # 計算支撐/壓力線 (最近 p_lookback 天)
-    lb = min(config.get("p_lookback", 15), len(df))
-    x = np.arange(lb)
-    h, l = df["High"].iloc[-lb:].values, df["Low"].iloc[-lb:].values
-    sh, ih, _, _, _ = linregress(x, h)  # 壓力線
-    sl, il, _, _, _ = linregress(x, l)  # 支撐線
+    active_hits = []
+    if (sh < -0.001 and sl > 0.001): active_hits.append("📐三角收斂")
+    if (abs(sh) < 0.03 and abs(sl) < 0.03): active_hits.append("📦箱型整理")
+    v_avg = df["Volume"].iloc[-21:-1].mean() if len(df) > 21 else v_last
+    if (v_last > v_avg * 1.8): active_hits.append("🚀今日爆量")
 
-    # lines 用於 K 線圖 (保持原結構)
-    return {
-        "收藏": sid in st.session_state.favorites,
-        "sid": sid,
-        "名稱": name,
-        "現價": round(c, 2),
-        "符合訊號": ", ".join(active_hits),
-        "Yahoo": f"https://tw.stock.yahoo.com/quote/{sid.split('.')[0]}.TW",
-        "df": df,
-        "lines": (sh, ih, sl, il, x)
-    }
+    # -----------------------------
+    # 顯示邏輯
+    # -----------------------------
+    if is_manual:
+        # 手動模式：只要抓到資料就顯示
+        should_show = True
+    else:
+        # 自動掃描 / 追蹤清單：保留訊號篩選
+        hit_match = any([
+            config.get("check_tri") and "📐" in "".join(active_hits),
+            config.get("check_box") and "📦" in "".join(active_hits),
+            config.get("check_vol") and "🚀" in "".join(active_hits)
+        ])
+        should_show = hit_match
+        ma_m = df["Close"].rolling(config.get("p_ma_m", 20)).mean().iloc[-1]
+        if config.get("f_ma_filter") and c < ma_m:
+            should_show = False
+
+    if should_show:
+        return {
+            "收藏": sid in st.session_state.favorites,
+            "sid": sid,
+            "名稱": name,
+            "現價": round(c, 2),
+            "符合訊號": ", ".join(active_hits) if active_hits else "🔍觀察中",
+            "Yahoo": f"https://tw.stock.yahoo.com/quote/{sid.split('.')[0]}.TW",
+            "df": df,
+            "lines": (sh, ih, sl, il, x)
+        }
+
+    return None
 
 # ==========================================
-# 3. Sidebar 控制面板 (依模式自動簡化)
+# 3. Sidebar 控制面板
 # ==========================================
 full_db = load_db()
 with st.sidebar:
@@ -66,11 +90,10 @@ with st.sidebar:
     
     if "m_state" not in st.session_state: st.session_state.m_state = app_mode
     if app_mode != st.session_state.m_state:
-        st.session_state.results_data = [] # 清空確保乾淨
+        st.session_state.results_data = []
         st.session_state.m_state = app_mode
         st.rerun()
 
-    # --- 追蹤清單時，隱藏下方所有設定 ---
     if app_mode != "❤️ 追蹤清單":
         st.divider()
         st.subheader("📡 訊號監控")
@@ -86,7 +109,6 @@ with st.sidebar:
             scan_limit = st.slider("掃描上限", 50, 500, 100)
             config = locals()
     else:
-        # 追蹤清單模式下的隱含參數 (確保 run_analysis 不報錯)
         config = {"p_ma_m": 20, "p_lookback": 15}
 
     current_key = f"{app_mode}-{config.get('scan_limit', 0)}"
@@ -114,7 +136,7 @@ if app_mode == "🔍 手動模式":
                 df = yf.download(s, period="6mo", progress=False)
                 if not df.empty:
                     res = run_analysis(s, full_db.get(s, s.split('.')[0]), df, config, is_manual=True)
-                    temp.append(res)
+                    if res: temp.append(res)
                 else:
                     st.warning(f"{s} 沒抓到資料")
         st.session_state.results_data = temp
@@ -127,9 +149,9 @@ elif app_mode == "⚡ 自動掃描" and (trigger_scan or not st.session_state.re
         data = yf.download(all_codes, period="6mo", group_by='ticker', progress=False)
         for s in all_codes:
             df = data[s] if len(all_codes) > 1 else data
-            if not df.empty:
+            if not df.empty and (df["Volume"].iloc[-1] / 1000 >= config.get('min_v', 0)):
                 res = run_analysis(s, full_db.get(s, s.split('.')[0]), df, config)
-                temp.append(res)
+                if res: temp.append(res)
     st.session_state.results_data = temp
     status.update(label="✅ 掃描完成", state="complete")
 
@@ -142,7 +164,7 @@ elif app_mode == "❤️ 追蹤清單" and not st.session_state.results_data:
                 df = yf.download(s, period="6mo", progress=False)
                 if not df.empty:
                     res = run_analysis(s, full_db.get(s, s), df, config, is_manual=True)
-                    temp.append(res)
+                    if res: temp.append(res)
         st.session_state.results_data = temp
 
 # ==========================================
@@ -163,15 +185,13 @@ if st.session_state.results_data:
         st.session_state.favorites = new_favs
         st.rerun()
 
+    # K 線圖
     for r in d_data:
         with st.expander(f"📈 {r['sid']} {r['名稱']} | {r['符合訊號']}", expanded=True):
             df_t, (sh, ih, sl, il, x) = r["df"].iloc[-60:], r["lines"]
             fig = go.Figure(data=[go.Candlestick(x=df_t.index, open=df_t['Open'], high=df_t['High'], low=df_t['Low'], close=df_t['Close'])])
-            # 繪製支撐/壓力線
-            if len(x) >= 2:
-                x_plot = df_t.index[-len(x):]
-                fig.add_scatter(x=x_plot, y=sh*x + ih, mode='lines', line=dict(color='red', dash='dash'), name='壓力')
-                fig.add_scatter(x=x_plot, y=sl*x + il, mode='lines', line=dict(color='green', dash='dash'), name='支撐')
+            fig.add_scatter(x=df_t.index[-len(x):], y=sh*x+ih, mode='lines', line=dict(color='red', dash='dash'), name='壓力')
+            fig.add_scatter(x=df_t.index[-len(x):], y=sl*x+il, mode='lines', line=dict(color='green', dash='dash'), name='支撐')
             fig.update_layout(height=400, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig, use_container_width=True, key=f"k_{r['sid']}_{app_mode}")
 else:
