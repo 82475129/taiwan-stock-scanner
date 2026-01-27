@@ -22,7 +22,10 @@ def load_db():
         try:
             with open(f, "r", encoding="utf-8") as file: return json.load(file)
         except: pass
+    # 若沒有檔案，預設幾支股票
     return {"2330.TW": "台積電", "2603.TW": "長榮"}
+
+full_db = load_db()
 
 # ==========================================
 # 2. 核心分析引擎
@@ -47,15 +50,14 @@ def run_analysis(sid, name, df, config, is_manual=False):
             sh, ih, _, _, _ = linregress(x, h)
             sl, il, _, _, _ = linregress(x, l)
         except ValueError:
-            # 無法計算線性回歸就用零線
-            sh = sl = ih = il = 0
+            sh = sl = ih = il = None
 
-        if (sh < -0.001 and sl > 0.001): active_hits.append("📐三角收斂")
-        if (abs(sh) < 0.03 and abs(sl) < 0.03): active_hits.append("📦箱型整理")
+        if sh is not None:
+            if (sh < -0.001 and sl > 0.001): active_hits.append("📐三角收斂")
+            if (abs(sh) < 0.03 and abs(sl) < 0.03): active_hits.append("📦箱型整理")
         v_avg = df["Volume"].iloc[-21:-1].mean() if len(df) > 21 else v_last
-        if (v_last > v_avg * 1.8): active_hits.append("🚀今日爆量")
+        if v_last > v_avg * 1.8: active_hits.append("🚀今日爆量")
 
-        # 顯示條件
         hit_match = any([
             config.get("check_tri") and "📐" in "".join(active_hits),
             config.get("check_box") and "📦" in "".join(active_hits),
@@ -66,11 +68,10 @@ def run_analysis(sid, name, df, config, is_manual=False):
         if config.get("f_ma_filter") and c < ma_m:
             should_show = False
     else:
-        # 手動模式：永遠顯示，不計算訊號
+        # 手動模式 → 永遠顯示 K 線
         should_show = True
-        # linregress 用零線避免繪圖錯誤
-        x = np.arange(min(len(df), 60))
-        sh = ih = sl = il = 0
+        sh = sl = ih = il = None
+        x = None
 
     if should_show:
         return {
@@ -84,14 +85,14 @@ def run_analysis(sid, name, df, config, is_manual=False):
             "lines": (sh, ih, sl, il, x)
         }
     return None
+
 # ==========================================
 # 3. Sidebar 控制面板
 # ==========================================
-full_db = load_db()
 with st.sidebar:
     st.title("🛡️ 戰術控制台")
     app_mode = st.radio("模式切換", ["⚡ 自動掃描", "🔍 手動模式", "❤️ 追蹤清單"])
-    
+
     if "m_state" not in st.session_state: st.session_state.m_state = app_mode
     if app_mode != st.session_state.m_state:
         st.session_state.results_data = []
@@ -124,14 +125,14 @@ with st.sidebar:
 # ==========================================
 st.title(f"📍 {app_mode}")
 
-# A. 手動模式
+# 手動模式
 if app_mode == "🔍 手動模式":
     c1, c2 = st.columns([4, 1])
     with c1: s_input = st.text_input("輸入代碼 (例如: 2330, 2603)", key="min")
-    with c2: 
+    with c2:
         st.write(" ")
         manual_exec = st.button("🔍 執行搜尋", type="primary", use_container_width=True)
-    
+
     if manual_exec and s_input:
         codes = [c.strip().upper() + ".TW" if "." not in c else c.strip().upper() for c in s_input.replace("，", ",").split(",") if c.strip()]
         temp = []
@@ -145,7 +146,7 @@ if app_mode == "🔍 手動模式":
                     st.warning(f"{s} 沒抓到資料")
         st.session_state.results_data = temp
 
-# B. 自動掃描
+# 自動掃描
 elif app_mode == "⚡ 自動掃描" and (trigger_scan or not st.session_state.results_data):
     all_codes = list(full_db.keys())[:config.get('scan_limit', 50)]
     temp = []
@@ -156,10 +157,10 @@ elif app_mode == "⚡ 自動掃描" and (trigger_scan or not st.session_state.re
             if not df.empty and (df["Volume"].iloc[-1] / 1000 >= config.get('min_v', 0)):
                 res = run_analysis(s, full_db.get(s, s.split('.')[0]), df, config)
                 if res: temp.append(res)
-    st.session_state.results_data = temp
-    status.update(label="✅ 掃描完成", state="complete")
+        st.session_state.results_data = temp
+        status.update(label="✅ 掃描完成", state="complete")
 
-# C. 追蹤清單
+# 追蹤清單
 elif app_mode == "❤️ 追蹤清單" and not st.session_state.results_data:
     if st.session_state.favorites:
         temp = []
@@ -172,7 +173,7 @@ elif app_mode == "❤️ 追蹤清單" and not st.session_state.results_data:
         st.session_state.results_data = temp
 
 # ==========================================
-# 5. 渲染 (表格與 K 線)
+# 5. 渲染表格與 K 線
 # ==========================================
 if st.session_state.results_data:
     d_data = st.session_state.results_data
@@ -180,10 +181,27 @@ if st.session_state.results_data:
         d_data = [r for r in d_data if r['sid'] in st.session_state.favorites]
 
     # 表格
-    t_df = pd.DataFrame([{"收藏": r["收藏"], "代碼": r["sid"], "名稱": r["名稱"], "現價": r["現價"], "符合訊號": r["符合訊號"]} for r in d_data])
-    edit = st.data_editor(t_df, column_config={"收藏": st.column_config.CheckboxColumn("❤️")}, use_container_width=True, hide_index=True, key=f"ed_{app_mode}")
+    t_df = pd.DataFrame([{
+        "收藏": r["收藏"],
+        "代碼": r["sid"],
+        "名稱": r["名稱"],
+        "現價": r["現價"],
+        "符合訊號": r["符合訊號"],
+        "Yahoo": r["Yahoo"]
+    } for r in d_data])
     
-    # 收藏狀態同步
+    edit = st.data_editor(
+        t_df,
+        column_config={
+            "收藏": st.column_config.CheckboxColumn("❤️"),
+            "Yahoo": st.column_config.LinkColumn("Yahoo", help="前往 Yahoo 股價頁面")
+        },
+        use_container_width=True,
+        hide_index=True,
+        key=f"ed_{app_mode}"
+    )
+
+    # 收藏同步
     new_favs = set(edit[edit["收藏"] == True]["代碼"])
     if new_favs != st.session_state.favorites:
         st.session_state.favorites = new_favs
@@ -192,12 +210,19 @@ if st.session_state.results_data:
     # K 線圖
     for r in d_data:
         with st.expander(f"📈 {r['sid']} {r['名稱']} | {r['符合訊號']}", expanded=True):
-            df_t, (sh, ih, sl, il, x) = r["df"].iloc[-60:], r["lines"]
-            fig = go.Figure(data=[go.Candlestick(x=df_t.index, open=df_t['Open'], high=df_t['High'], low=df_t['Low'], close=df_t['Close'])])
-            fig.add_scatter(x=df_t.index[-len(x):], y=sh*x+ih, mode='lines', line=dict(color='red', dash='dash'), name='壓力')
-            fig.add_scatter(x=df_t.index[-len(x):], y=sl*x+il, mode='lines', line=dict(color='green', dash='dash'), name='支撐')
-            fig.update_layout(height=400, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=10, b=10))
+            df_t = r["df"].iloc[-60:]
+            sh, ih, sl, il, x = r["lines"]
+            fig = go.Figure(data=[go.Candlestick(
+                x=df_t.index,
+                open=df_t['Open'], high=df_t['High'], low=df_t['Low'], close=df_t['Close']
+            )])
+            if sh is not None and x is not None:
+                fig.add_scatter(x=df_t.index[-len(x):], y=sh*x+ih, mode='lines',
+                                line=dict(color='red', dash='dash'), name='壓力')
+                fig.add_scatter(x=df_t.index[-len(x):], y=sl*x+il, mode='lines',
+                                line=dict(color='green', dash='dash'), name='支撐')
+            fig.update_layout(height=400, xaxis_rangeslider_visible=False,
+                              margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig, use_container_width=True, key=f"k_{r['sid']}_{app_mode}")
 else:
     st.info("尚無數據。手動模式請輸入代碼後按搜尋。")
-
