@@ -30,6 +30,7 @@ full_db = load_db()
 # ==========================================
 # 2. 核心分析引擎
 # ==========================================
+# ... run_analysis 部分修改如下
 def run_analysis(sid, name, df, config, is_manual=False):
     if df is None or df.empty: return None
     df = df.copy().dropna()
@@ -40,12 +41,12 @@ def run_analysis(sid, name, df, config, is_manual=False):
 
     active_hits = []
 
+    lb = min(config.get("p_lookback", 15), len(df))
+    x = np.arange(lb)
+
     if not is_manual:
         # 自動掃描才計算訊號和 linregress
-        lb = min(config.get("p_lookback", 15), len(df))
-        x = np.arange(lb)
         h, l = df["High"].iloc[-lb:].values, df["Low"].iloc[-lb:].values
-
         try:
             sh, ih, _, _, _ = linregress(x, h)
             sl, il, _, _, _ = linregress(x, l)
@@ -70,8 +71,8 @@ def run_analysis(sid, name, df, config, is_manual=False):
     else:
         # 手動模式 → 永遠顯示 K 線
         should_show = True
+        # 支撐/壓力線設成 None，但 Candlestick 用 df.index
         sh = sl = ih = il = None
-        x = None
 
     if should_show:
         return {
@@ -82,7 +83,7 @@ def run_analysis(sid, name, df, config, is_manual=False):
             "符合訊號": ", ".join(active_hits) if active_hits else ("🔍手動模式" if is_manual else "🔍觀察中"),
             "Yahoo": f"https://tw.stock.yahoo.com/quote/{sid.split('.')[0]}.TW",
             "df": df,
-            "lines": (sh, ih, sl, il, x)
+            "lines": (sh, ih, sl, il, x)  # x 用於自動掃描畫線
         }
     return None
 
@@ -226,3 +227,4 @@ if st.session_state.results_data:
             st.plotly_chart(fig, use_container_width=True, key=f"k_{r['sid']}_{app_mode}")
 else:
     st.info("尚無數據。手動模式請輸入代碼後按搜尋。")
+
