@@ -35,27 +35,27 @@ def run_analysis(sid, name, df, config, is_manual=False):
     c = float(df["Close"].iloc[-1])
     v_last = df["Volume"].iloc[-1]
 
-    # 訊號計算 (保留但手動模式不篩選)
-    lb = config.get("p_lookback", 15)
-    x = np.arange(min(lb, len(df)))
-    h, l = df["High"].iloc[-len(x):].values, df["Low"].iloc[-len(x):].values
-    sh, ih, _, _, _ = linregress(x, h)
-    sl, il, _, _, _ = linregress(x, l)
-
     active_hits = []
-    if (sh < -0.001 and sl > 0.001): active_hits.append("📐三角收斂")
-    if (abs(sh) < 0.03 and abs(sl) < 0.03): active_hits.append("📦箱型整理")
-    v_avg = df["Volume"].iloc[-21:-1].mean() if len(df) > 21 else v_last
-    if (v_last > v_avg * 1.8): active_hits.append("🚀今日爆量")
 
-    # -----------------------------
-    # 顯示邏輯
-    # -----------------------------
-    if is_manual:
-        # 手動模式：只要抓到資料就顯示
-        should_show = True
-    else:
-        # 自動掃描 / 追蹤清單：保留訊號篩選
+    if not is_manual:
+        # 自動掃描才計算訊號和 linregress
+        lb = min(config.get("p_lookback", 15), len(df))
+        x = np.arange(lb)
+        h, l = df["High"].iloc[-lb:].values, df["Low"].iloc[-lb:].values
+
+        try:
+            sh, ih, _, _, _ = linregress(x, h)
+            sl, il, _, _, _ = linregress(x, l)
+        except ValueError:
+            # 無法計算線性回歸就用零線
+            sh = sl = ih = il = 0
+
+        if (sh < -0.001 and sl > 0.001): active_hits.append("📐三角收斂")
+        if (abs(sh) < 0.03 and abs(sl) < 0.03): active_hits.append("📦箱型整理")
+        v_avg = df["Volume"].iloc[-21:-1].mean() if len(df) > 21 else v_last
+        if (v_last > v_avg * 1.8): active_hits.append("🚀今日爆量")
+
+        # 顯示條件
         hit_match = any([
             config.get("check_tri") and "📐" in "".join(active_hits),
             config.get("check_box") and "📦" in "".join(active_hits),
@@ -65,6 +65,12 @@ def run_analysis(sid, name, df, config, is_manual=False):
         ma_m = df["Close"].rolling(config.get("p_ma_m", 20)).mean().iloc[-1]
         if config.get("f_ma_filter") and c < ma_m:
             should_show = False
+    else:
+        # 手動模式：永遠顯示，不計算訊號
+        should_show = True
+        # linregress 用零線避免繪圖錯誤
+        x = np.arange(min(len(df), 60))
+        sh = ih = sl = il = 0
 
     if should_show:
         return {
@@ -72,14 +78,12 @@ def run_analysis(sid, name, df, config, is_manual=False):
             "sid": sid,
             "名稱": name,
             "現價": round(c, 2),
-            "符合訊號": ", ".join(active_hits) if active_hits else "🔍觀察中",
+            "符合訊號": ", ".join(active_hits) if active_hits else ("🔍手動模式" if is_manual else "🔍觀察中"),
             "Yahoo": f"https://tw.stock.yahoo.com/quote/{sid.split('.')[0]}.TW",
             "df": df,
             "lines": (sh, ih, sl, il, x)
         }
-
     return None
-
 # ==========================================
 # 3. Sidebar 控制面板
 # ==========================================
@@ -196,3 +200,4 @@ if st.session_state.results_data:
             st.plotly_chart(fig, use_container_width=True, key=f"k_{r['sid']}_{app_mode}")
 else:
     st.info("尚無數據。手動模式請輸入代碼後按搜尋。")
+
