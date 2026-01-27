@@ -6,14 +6,14 @@ from scipy.stats import linregress
 import os, json
 
 # ==========================================
-# 1. 初始化與狀態鎖定
+# 1. 系統初始化與狀態管理
 # ==========================================
-st.set_page_config(page_title="台股 Pro 戰情室", layout="wide")
+st.set_page_config(page_title="台股 Pro 戰情表格", layout="wide")
 
 if 'favorites' not in st.session_state:
-    st.session_state.favorites = {} 
-if 'results_data' not in st.session_state:
-    st.session_state.results_data = [] 
+    st.session_state.favorites = set()  # 使用 set 存代碼更快速
+if 'results_df' not in st.session_state:
+    st.session_state.results_df = pd.DataFrame() 
 if 'last_config_key' not in st.session_state:
     st.session_state.last_config_key = ""
 
@@ -28,7 +28,7 @@ def load_db():
     return {"2330.TW": "台積電"}
 
 # ==========================================
-# 2. 專業分析引擎
+# 2. 專業分析引擎 (回傳 dict 用於組建 DataFrame)
 # ==========================================
 def run_analysis(sid, name, df, config, is_manual=False):
     if df is None or len(df) < 60: return None
@@ -56,22 +56,17 @@ def run_analysis(sid, name, df, config, is_manual=False):
         if config.get("check_vol") and (v_last > v_avg * 1.8): active_hits.append("🚀爆量")
         if config.get("check_rsi") and (rsi < 35 or rsi > 70): active_hits.append(f"🌡️RSI")
 
-        if is_manual:
-            should_show = True
-        else:
-            should_show = bool(active_hits)
-            if config.get("f_ma_filter") and c < ma_m: should_show = False
-            
-        if should_show:
+        if is_manual or (bool(active_hits) and (not config.get("f_ma_filter") or c >= ma_m)):
             return {
-                "sid": sid, "name": name, "price": round(c, 2), "vol": int(v_last/1000), 
-                "rsi": round(rsi, 1), "hits": active_hits if active_hits else ["🔍觀察"]
+                "收藏": sid in st.session_state.favorites,
+                "代碼": sid, "名稱": name, "現價": round(c, 2), 
+                "符合訊號": ", ".join(active_hits) if active_hits else "🔍觀察"
             }
     except: pass
     return None
 
 # ==========================================
-# 3. Sidebar 控制面板 (動態顯示)
+# 3. Sidebar 控制面板
 # ==========================================
 full_db = load_db()
 with st.sidebar:
@@ -81,14 +76,13 @@ with st.sidebar:
     # 邏輯：換到手動立即清空
     if "m_state" not in st.session_state: st.session_state.m_state = app_mode
     if app_mode != st.session_state.m_state:
-        if app_mode == "🔍 手動模式": st.session_state.results_data = []
+        if app_mode == "🔍 手動模式": st.session_state.results_df = pd.DataFrame()
         st.session_state.m_state = app_mode
         st.rerun()
 
-    # --- 關鍵：追蹤清單不要顯示這些 ---
     if app_mode != "❤️ 追蹤清單":
         st.divider()
-        st.subheader("📡 訊號監控開關")
+        st.subheader("📡 訊號監控")
         check_tri = st.checkbox("📐 三角收斂", True)
         check_box = st.checkbox("📦 箱型整理", True)
         check_vol = st.checkbox("🚀 今日爆量", True)
@@ -109,76 +103,78 @@ with st.sidebar:
             scan_limit = st.slider("上限", 50, 500, 100)
             config = locals()
 
-        # 自動模式勾選即掃描
+        # 自動模式勾選即掃描邏輯
         current_key = f"{app_mode}-{check_tri}-{check_box}-{check_vol}-{check_rsi}-{min_v}-{scan_limit}"
         trigger_scan = (app_mode == "⚡ 自動掃描" and current_key != st.session_state.last_config_key)
         if trigger_scan: st.session_state.last_config_key = current_key
     else:
-        # 追蹤清單模式下，不需要配置邏輯
         trigger_scan = False
 
 # ==========================================
-# 4. 掃描執行
+# 4. 掃描與資料組建
 # ==========================================
 st.title(f"📍 {app_mode}")
 
-if app_mode == "⚡ 自動掃描" and (trigger_scan or not st.session_state.results_data):
+if app_mode == "⚡ 自動掃描" and (trigger_scan or st.session_state.results_df.empty):
     codes = list(full_db.keys())[:scan_limit]
     with st.status("📡 掃描中...", expanded=False) as status:
         data = yf.download(codes, period="6mo", group_by='ticker', progress=False)
-        temp = []
+        rows = []
         for sid in codes:
             df = data[sid] if len(codes) > 1 else data
             if not df.empty and (df["Volume"].iloc[-1] / 1000 >= min_v):
                 res = run_analysis(sid, full_db.get(sid, "未知"), df, config)
-                if res: temp.append(res)
-        st.session_state.results_data = temp
-        status.update(label="✅ 掃描完成", state="complete")
+                if res: rows.append(res)
+        st.session_state.results_df = pd.DataFrame(rows)
+        status.update(label="✅ 完成", state="complete")
 
 elif app_mode == "🔍 手動模式" and manual_exec:
     codes = [c.strip()+".TW" if "." not in c else c.strip().upper() for c in s_input.split(",")] if s_input else list(full_db.keys())[:scan_limit]
     with st.spinner("搜尋中..."):
         data = yf.download(codes, period="6mo", group_by='ticker', progress=False)
-        temp = []
+        rows = []
         for sid in codes:
             df = data[sid] if len(codes) > 1 else data
             if not df.empty:
                 res = run_analysis(sid, full_db.get(sid, "未知"), df, config, is_manual=bool(s_input))
-                if res: temp.append(res)
-        st.session_state.results_data = temp
+                if res: rows.append(res)
+        st.session_state.results_df = pd.DataFrame(rows)
 
 # ==========================================
-# 5. 全表格顯示 (模擬表格排列)
+# 5. 表格顯示區 (使用 Data Editor 實現愛心連動)
 # ==========================================
-final_list = st.session_state.results_data
+df_to_show = st.session_state.results_df
+
 if app_mode == "❤️ 追蹤清單":
-    # 追蹤清單只過濾收藏夾內的代碼
-    final_list = [r for r in st.session_state.results_data if r['sid'] in st.session_state.favorites]
+    if not st.session_state.results_df.empty:
+        df_to_show = st.session_state.results_df[st.session_state.results_df['代碼'].isin(st.session_state.favorites)]
+    else:
+        st.info("請先從掃描結果中勾選收藏。")
+        st.stop()
 
-if final_list:
-    # --- 模擬表格標題 ---
-    h_cols = st.columns([1, 1.5, 1.5, 1.5, 3])
-    h_cols[0].write("**收藏**")
-    h_cols[1].write("**代碼**")
-    h_cols[2].write("**名稱**")
-    h_cols[3].write("**現價**")
-    h_cols[4].write("**符合訊號**")
-    st.divider()
+if not df_to_show.empty:
+    st.subheader("📊 戰情即時數據 (勾選第一欄即可收藏)")
+    
+    # 使用 data_editor 讓表格可以互動
+    edited_df = st.data_editor(
+        df_to_show,
+        column_config={
+            "收藏": st.column_config.CheckboxColumn("收藏 ❤️", default=False),
+            "現價": st.column_config.NumberColumn("現價", format="$%.2f"),
+            "代碼": st.column_config.TextColumn("代碼"),
+        },
+        disabled=["代碼", "名稱", "現價", "符合訊號"], # 只有收藏欄位能點
+        hide_index=True,
+        use_container_width=True,
+        key="main_table"
+    )
 
-    # --- 模擬表格內容 (每一列都有可按愛心) ---
-    for r in final_list:
-        is_fav = r['sid'] in st.session_state.favorites
-        r_cols = st.columns([1, 1.5, 1.5, 1.5, 3])
-        
-        # 表格內的愛心：點擊切換狀態，不觸發掃描
-        if r_cols[0].button("❤️" if is_fav else "🤍", key=f"f_{app_mode}_{r['sid']}"):
-            if is_fav: del st.session_state.favorites[r['sid']]
-            else: st.session_state.favorites[r['sid']] = r['name']
-            st.rerun() 
-            
-        r_cols[1].write(r['sid'])
-        r_cols[2].write(r['name'])
-        r_cols[3].write(f"**{r['price']}**")
-        r_cols[4].write(", ".join(r['hits']))
+    # 處理表格勾選連動：當 edited_df 改變時，更新 session_state.favorites
+    new_favs = set(edited_df[edited_df["收藏"] == True]["代碼"])
+    if new_favs != st.session_state.favorites:
+        st.session_state.favorites = new_favs
+        # 更新原始數據中的收藏狀態，確保切換模式時狀態還在
+        st.session_state.results_df["收藏"] = st.session_state.results_df["代碼"].apply(lambda x: x in new_favs)
+        st.rerun()
 else:
-    st.info("目前無符合條件之資料。" if app_mode != "❤️ 追蹤清單" else "收藏夾目前是空的。")
+    st.warning("⚠️ 目前無資料，請調整勾選框或執行手動搜尋。")
