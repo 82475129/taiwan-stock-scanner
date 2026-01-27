@@ -7,14 +7,16 @@ from scipy.stats import linregress
 import sys, json, os
 
 # ==========================================
-# 0. 系統基礎設定與 Session 初始化
+# 0. 系統基礎設定與環境檢查
 # ==========================================
+# 檢查是否在 Streamlit 環境中執行
+IS_STREAMLIT = hasattr(st, "runtime") and st.runtime.exists()
 DB_FILES = ["taiwan_electronic_stocks.json", "taiwan_full_market.json"]
 
-st.set_page_config(page_title="台股 Pro-X 雙模大師", layout="wide")
-
-if 'favorites' not in st.session_state:
-    st.session_state.favorites = {} 
+if IS_STREAMLIT:
+    st.set_page_config(page_title="台股 Pro-X 雙模大師", layout="wide")
+    if 'favorites' not in st.session_state:
+        st.session_state.favorites = {} 
 
 @st.cache_data(ttl=3600)
 def load_and_fix_db():
@@ -67,71 +69,72 @@ def run_analysis(df, sid, name, config):
     except: return None
 
 # ==========================================
-# 2. 左側介面 (Sidebar)
+# 2. 左側介面 (僅在 Streamlit 顯示)
 # ==========================================
 full_db = load_and_fix_db()
 all_codes = list(full_db.keys())
 sectors = ["全部"] + sorted(list(set(get_auto_sector(c) for c in all_codes)))
 
-with st.sidebar:
-    st.title("🏹 交易監控中心")
-    
-    # --- A. 模式切換 (最重要) ---
-    app_mode = st.radio("🛰️ 掃描模式", ["⚡ 自動雷達 (變動即掃)", "🛠️ 手動工具 (進階功能)"])
-    
-    st.divider()
-    
-    # --- B. 我的最愛 ---
-    st.subheader("❤️ 我的最愛")
-    if not st.session_state.favorites:
-        st.caption("尚未收藏標的")
-    else:
-        for fid, fname in list(st.session_state.favorites.items()):
-            fcol1, fcol2 = st.columns([4, 1])
-            fcol1.markdown(f"**{fid}** {fname}")
-            if fcol2.button("🗑️", key=f"sidebar_del_{fid}"):
-                del st.session_state.favorites[fid]
-                st.rerun()
+# 預設參數 (GitHub Actions 會用到)
+selected_sector = "全部"
+config = {"f_tri": True, "f_box": True, "f_vol": False, "f_ma20": False}
+min_v = 500
+scan_limit = 100
+app_mode = "⚡ 自動雷達 (變動即掃)"
 
-    st.divider()
-    
-    # --- C. 共有參數 ---
-    st.subheader("⚙️ 篩選參數")
-    selected_sector = st.selectbox("產業分類", sectors)
-    f_tri = st.checkbox("📐 三角收斂", True)
-    f_box = st.checkbox("📦 箱型整理", True)
-    f_vol = st.checkbox("🚀 今日爆量", False)
-    f_ma20 = st.checkbox("📈 股價 > MA20", False)
-    config = {"f_tri": f_tri, "f_box": f_box, "f_vol": f_vol, "f_ma20": f_ma20}
-    
-    min_v = st.number_input("成交量門檻 (張)", value=500, step=100)
-    scan_limit = st.slider("掃描上限", 50, 2000, 100)
+if IS_STREAMLIT:
+    with st.sidebar:
+        st.title("🏹 交易監控中心")
+        app_mode = st.radio("🛰️ 掃描模式", ["⚡ 自動雷達 (變動即掃)", "🛠️ 手動工具 (進階功能)"])
+        
+        st.subheader("❤️ 我的最愛")
+        if not st.session_state.favorites:
+            st.caption("尚未收藏標的")
+        else:
+            for fid, fname in list(st.session_state.favorites.items()):
+                fcol1, fcol2 = st.columns([4, 1])
+                fcol1.markdown(f"**{fid}** {fname}")
+                if fcol2.button("🗑️", key=f"sidebar_del_{fid}"):
+                    del st.session_state.favorites[fid]
+                    st.rerun()
+        
+        st.divider()
+        st.subheader("⚙️ 篩選參數")
+        selected_sector = st.selectbox("產業分類", sectors)
+        f_tri = st.checkbox("📐 三角收斂", config["f_tri"])
+        f_box = st.checkbox("📦 箱型整理", config["f_box"])
+        f_vol = st.checkbox("🚀 今日爆量", config["f_vol"])
+        f_ma20 = st.checkbox("📈 股價 > MA20", config["f_ma20"])
+        config = {"f_tri": f_tri, "f_box": f_box, "f_vol": f_vol, "f_ma20": f_ma20}
+        min_v = st.number_input("成交量門檻 (張)", value=min_v)
+        scan_limit = st.slider("掃描上限", 50, 2000, scan_limit)
 
 # ==========================================
-# 3. 主畫面邏輯
+# 3. 主畫面與執行邏輯
 # ==========================================
-st.title(f"📈 {app_mode}")
+if IS_STREAMLIT:
+    st.title(f"📈 {app_mode}")
 
-# 準備掃描名單
 active_codes = all_codes if selected_sector == "全部" else [c for c in all_codes if get_auto_sector(c) == selected_sector]
 results = []
-trigger_scan = False
+trigger_scan = (app_mode == "⚡ 自動雷達 (變動即掃)" or not IS_STREAMLIT)
 
-if app_mode == "⚡ 自動雷達 (變動即掃)":
-    trigger_scan = True # 自動模式隨時觸發
-else:
-    # --- 手動模式專屬功能區 ---
+if IS_STREAMLIT and app_mode == "🛠️ 手動工具 (進階功能)":
+    trigger_scan = False
     st.info("🛠️ 手動模式：調整參數後請點擊下方按鈕開始掃描。")
     m_col1, m_col2 = st.columns(2)
-    custom_ids = m_col1.text_area("✍️ 自訂掃描名單 (代碼逗號隔開)", placeholder="例如: 2330, 2303, 2454")
+    custom_ids = m_col1.text_area("✍️ 自訂掃描名單 (代碼逗號隔開)", placeholder="例如: 2330, 2303")
     if m_col2.button("🚀 開始手動全域掃描", type="primary", use_container_width=True):
         if custom_ids:
             active_codes = [c.strip() + ".TW" if "." not in c else c.strip() for c in custom_ids.split(",")]
         trigger_scan = True
 
-# 執行掃描邏輯
+# 執行掃描 (修正 AttributeError 的核心區塊)
 if trigger_scan:
-    with st.status(f"📡 掃描中: {selected_sector}...", expanded=False) as status:
+    # 建立進度顯示
+    status_ui = st.status(f"📡 掃描中: {selected_sector}...", expanded=False) if IS_STREAMLIT else None
+    
+    try:
         v_df = yf.download(active_codes, period="5d", progress=False)["Volume"]
         latest_v = v_df.iloc[-1] if not v_df.iloc[-1].isna().all() else v_df.iloc[-2]
         vol_filtered = (latest_v / 1000).dropna()
@@ -146,13 +149,21 @@ if trigger_scan:
                     df_sid = h_data[sid] if len(batch) > 1 else h_data
                     res = run_analysis(df_sid, sid, full_db.get(sid, "未知"), config)
                     if res: results.append(res)
-        status.update(label=f"✅ 完成！找到 {len(results)} 檔符合標的", state="complete")
+        
+        # 安全地更新狀態 (如果不是 None 才更新)
+        if status_ui:
+            status_ui.update(label=f"✅ 完成！找到 {len(results)} 檔符合標的", state="complete")
+        else:
+            print(f"✅ 掃描完成！找到 {len(results)} 檔符合標的")
+
+    except Exception as e:
+        if status_ui: status_ui.update(label=f"❌ 錯誤: {e}", state="error")
+        else: print(f"❌ 錯誤: {e}")
 
 # ==========================================
-# 4. 結果顯示
+# 4. 結果顯示 (僅在 Streamlit)
 # ==========================================
-if results:
-    # 頂部表格
+if IS_STREAMLIT and results:
     summary_df = pd.DataFrame([{
         "代碼": f"https://tw.stock.yahoo.com/quote/{r['sid']}",
         "名稱": r["name"], "現價": r["price"], "成交量(張)": r["vol"],
@@ -161,7 +172,6 @@ if results:
 
     st.dataframe(summary_df, column_config={"代碼": st.column_config.LinkColumn("代碼", display_text=r"quote/(.*)$")}, hide_index=True, use_container_width=True)
 
-    # 詳細圖表區
     for item in results:
         col_title, col_fav = st.columns([5, 1])
         with col_title:
@@ -180,5 +190,5 @@ if results:
             fig.add_scatter(x=df_t.index, y=sl*x+il, mode='lines', line=dict(color='green', dash='dash'), name='支撐')
             fig.update_layout(height=400, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig, use_container_width=True)
-elif trigger_scan:
+elif IS_STREAMLIT and trigger_scan:
     st.warning("💡 沒有符合條件的標的。")
