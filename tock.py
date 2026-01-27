@@ -7,16 +7,17 @@ from scipy.stats import linregress
 import os, json
 
 # ==========================================
-# 1. 初始化與狀態鎖定
+# 1. 系統初始化與核心狀態鎖定
 # ==========================================
 st.set_page_config(page_title="台股 Pro 旗艦戰情室", layout="wide")
 
+# 初始化記憶體
 if 'favorites' not in st.session_state:
     st.session_state.favorites = {} 
 if 'results_data' not in st.session_state:
     st.session_state.results_data = [] 
-if 'last_config_key' not in st.session_state:
-    st.session_state.last_config_key = ""
+if 'last_config' not in st.session_state:
+    st.session_state.last_config = {}
 
 @st.cache_data(ttl=3600)
 def load_db():
@@ -52,10 +53,10 @@ def run_analysis(sid, name, df, config, is_manual=False):
         sl, il, _, _, _ = linregress(x, l)
         
         active_hits = []
-        if config.get("check_tri") and (sh < -0.001 and sl > 0.001): active_hits.append("📐三角")
-        if config.get("check_box") and (abs(sh) < 0.03 and abs(sl) < 0.03): active_hits.append("📦箱型")
-        if config.get("check_vol") and (v_last > v_avg * 1.8): active_hits.append("🚀爆量")
-        if config.get("check_rsi") and (rsi < 35 or rsi > 70): active_hits.append(f"🌡️RSI")
+        if config.get("check_tri") and (sh < -0.001 and sl > 0.001): active_hits.append("📐三角收斂")
+        if config.get("check_box") and (abs(sh) < 0.03 and abs(sl) < 0.03): active_hits.append("📦箱型整理")
+        if config.get("check_vol") and (v_last > v_avg * 1.8): active_hits.append("🚀今日爆量")
+        if config.get("check_rsi") and (rsi < 35 or rsi > 70): active_hits.append(f"🌡️RSI:{round(rsi)}")
 
         if is_manual:
             should_show = True
@@ -77,17 +78,19 @@ def run_analysis(sid, name, df, config, is_manual=False):
 # ==========================================
 full_db = load_db()
 with st.sidebar:
-    st.title("🛡️ 戰術控制台")
+    st.title("🛡️ 戰術控制中心")
+    
     app_mode = st.radio("模式切換", ["⚡ 自動掃描", "🔍 手動模式", "❤️ 追蹤清單"])
     
-    # 邏輯：換到手動立即清空資料
-    if "current_mode" not in st.session_state: st.session_state.current_mode = app_mode
-    if app_mode != st.session_state.current_mode:
+    # 邏輯一：切換到手動模式立刻清空
+    if "prev_mode" not in st.session_state: st.session_state.prev_mode = app_mode
+    if app_mode != st.session_state.prev_mode:
         if app_mode == "🔍 手動模式": st.session_state.results_data = []
-        st.session_state.current_mode = app_mode
+        st.session_state.prev_mode = app_mode
         st.rerun()
 
     st.divider()
+    st.subheader("📡 訊號監控開關")
     check_tri = st.checkbox("📐 三角收斂", True)
     check_box = st.checkbox("📦 箱型整理", True)
     check_vol = st.checkbox("🚀 今日爆量", True)
@@ -97,103 +100,93 @@ with st.sidebar:
     manual_exec = False
     s_input = ""
     if app_mode == "🔍 手動模式":
-        s_input = st.text_input("輸入個股代碼", placeholder="例如: 2330, 2603")
-        manual_exec = st.button("🔍 執行手動搜尋", type="primary", use_container_width=True)
+        s_input = st.text_input("輸入代碼 (選填)", placeholder="2330, 2603")
+        manual_exec = st.button("🔍 執行搜尋", type="primary", use_container_width=True)
 
     with st.expander("🛠️ 進階參數"):
-        p_ma_m = st.number_input("均線", value=20)
-        p_lookback = st.slider("形態回溯", 10, 30, 15)
-        f_ma_filter = st.checkbox("限 MA20 之上", True)
+        config = {
+            "p_ma_m": st.number_input("均線", value=20),
+            "p_lookback": st.slider("形態回溯", 10, 30, 15),
+            "f_ma_filter": st.checkbox("限 MA20 之上", True),
+            "check_tri": check_tri, "check_box": check_box,
+            "check_vol": check_vol, "check_rsi": check_rsi
+        }
         min_v = st.number_input("成交量門檻", value=500)
         scan_limit = st.slider("上限", 50, 500, 100)
-        config = locals()
 
-    # 核心邏輯：改變勾選就要重掃 (自動模式)
-    config_key = f"{app_mode}-{check_tri}-{check_box}-{check_vol}-{check_rsi}-{min_v}-{scan_limit}"
-    trigger_auto_scan = False
-    if app_mode == "⚡ 自動掃描" and config_key != st.session_state.last_config_key:
-        trigger_auto_scan = True
-        st.session_state.last_config_key = config_key
+    # 邏輯二：自動模式下，改變勾選就要掃描
+    # 我們比較當前 config 和上次掃描時的 config
+    config_str = str(config) + str(min_v) + str(scan_limit)
+    need_scan = False
+    if app_mode == "⚡ 自動掃描" and config_str != st.session_state.last_config.get("auto_config"):
+        need_scan = True
+        st.session_state.last_config["auto_config"] = config_str
 
 # ==========================================
-# 4. 掃描核心
+# 4. 執行掃描邏輯
 # ==========================================
 st.title(f"📍 {app_mode}")
 
-if app_mode == "⚡ 自動掃描" and (trigger_auto_scan or not st.session_state.results_data):
+if app_mode == "⚡ 自動掃描" and (need_scan or not st.session_state.results_data):
     codes = list(full_db.keys())[:scan_limit]
-    with st.status("📡 配置更動，正在掃描市場...", expanded=False) as status:
+    with st.status("📡 偵測到配置更動，掃描中...", expanded=False) as status:
         data = yf.download(codes, period="6mo", group_by='ticker', progress=False)
-        temp = []
+        temp_res = []
         for sid in codes:
             df = data[sid] if len(codes) > 1 else data
             if not df.empty and (df["Volume"].iloc[-1] / 1000 >= min_v):
                 res = run_analysis(sid, full_db.get(sid, "未知"), df, config)
-                if res: temp.append(res)
-        st.session_state.results_data = temp
+                if res: temp_res.append(res)
+        st.session_state.results_data = temp_res
         status.update(label="✅ 掃描完成", state="complete")
 
 elif app_mode == "🔍 手動模式" and manual_exec:
     codes = [c.strip()+".TW" if "." not in c else c.strip().upper() for c in s_input.split(",")] if s_input else list(full_db.keys())[:scan_limit]
-    with st.spinner("手動資料抓取中..."):
+    with st.spinner("手動搜尋中..."):
         data = yf.download(codes, period="6mo", group_by='ticker', progress=False)
-        temp = []
+        temp_res = []
         for sid in codes:
             df = data[sid] if len(codes) > 1 else data
             if not df.empty:
                 res = run_analysis(sid, full_db.get(sid, "未知"), df, config, is_manual=bool(s_input))
-                if res: temp.append(res)
-        st.session_state.results_data = temp
+                if res: temp_res.append(res)
+        st.session_state.results_data = temp_res
 
 # ==========================================
-# 5. 排列得「像表格」的清單 (含可按愛心按鈕)
+# 5. 渲染顯示區
 # ==========================================
-final_list = st.session_state.results_data
+final_display = st.session_state.results_data
 if app_mode == "❤️ 追蹤清單":
-    final_list = [r for r in st.session_state.results_data if r['sid'] in st.session_state.favorites]
+    final_display = [r for r in st.session_state.results_data if r['sid'] in st.session_state.favorites]
 
-if final_list:
-    # --- 表格標題行 (手動對齊) ---
-    st.markdown("### 📊 掃描清單")
-    h_cols = st.columns([1, 1.5, 1.5, 1.5, 3])
-    h_cols[0].markdown("**收藏**")
-    h_cols[1].markdown("**代碼**")
-    h_cols[2].markdown("**名稱**")
-    h_cols[3].markdown("**現價**")
-    h_cols[4].markdown("**符合訊號**")
-    st.markdown("---")
+if final_display:
+    # 1. 總覽清單表格
+    table_df = pd.DataFrame([{
+        "收藏": "❤️" if r['sid'] in st.session_state.favorites else "🤍",
+        "代碼": r['sid'], "名稱": r["name"], "現價": r["price"], "符合訊號": ", ".join(r["hits"])
+    } for r in final_display])
+    st.table(table_df)
 
-    # --- 模擬表格內容 (每一行都有愛心可點) ---
-    for r in final_list:
+    # 2. 詳細 K 線圖與針對性收藏按鈕
+    for r in final_display:
         is_fav = r['sid'] in st.session_state.favorites
-        r_cols = st.columns([1, 1.5, 1.5, 1.5, 3])
-        
-        # 表格內的愛心按鈕：點擊僅切換收藏狀態，絕不重掃
-        if r_cols[0].button("❤️" if is_fav else "🤍", key=f"list_fav_{r['sid']}"):
-            if is_fav: del st.session_state.favorites[r['sid']]
-            else: st.session_state.favorites[r['sid']] = r['name']
-            st.rerun() 
-            
-        r_cols[1].write(r['sid'])
-        r_cols[2].write(r['name'])
-        r_cols[3].write(f"**{r['price']}**")
-        r_cols[4].write(", ".join(r['hits']))
-    
-    st.markdown("---")
-
-    # --- 詳細 K 線圖與壓力支撐 ---
-    for r in final_list:
-        is_fav = r['sid'] in st.session_state.favorites
-        with st.expander(f"{'❤️' if is_fav else '🔍'} {r['sid']} {r['name']} | 技術分析詳情", expanded=True):
-            df_t, (sh, ih, sl, il, x) = r["df"].iloc[-50:], r["lines"]
-            fig = go.Figure(data=[go.Candlestick(x=df_t.index, open=df_t['Open'], high=df_t['High'], low=df_t['Low'], close=df_t['Close'], name='K線')])
-            
-            # 形態線條
-            if any(s in "".join(r["hits"]) for s in ["📐", "📦"]):
-                fig.add_scatter(x=df_t.index[-config["p_lookback"]:], y=sh*x+ih, mode='lines', line=dict(color='red', dash='dash'), name='壓')
-                fig.add_scatter(x=df_t.index[-config["p_lookback"]:], y=sl*x+il, mode='lines', line=dict(color='green', dash='dash'), name='支')
-            
-            fig.update_layout(height=450, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=10, b=10))
-            st.plotly_chart(fig, use_container_width=True, key=f"cht_{r['sid']}")
+        with st.container():
+            col_chart, col_ctrl = st.columns([9, 1])
+            with col_chart:
+                with st.expander(f"{'❤️' if is_fav else '🔍'} {r['sid']} {r['name']} | 技術分析", expanded=True):
+                    df_t, (sh, ih, sl, il, x) = r["df"].iloc[-50:], r["lines"]
+                    fig = go.Figure(data=[go.Candlestick(x=df_t.index, open=df_t['Open'], high=df_t['High'], low=df_t['Low'], close=df_t['Close'], name='K線')])
+                    if ("📐" in "".join(r["hits"])) or ("📦" in "".join(r["hits"])):
+                        fig.add_scatter(x=df_t.index[-config["p_lookback"]:], y=sh*x+ih, mode='lines', line=dict(color='red', dash='dash'))
+                        fig.add_scatter(x=df_t.index[-config["p_lookback"]:], y=sl*x+il, mode='lines', line=dict(color='green', dash='dash'))
+                    fig.update_layout(height=400, xaxis_rangeslider_visible=False, margin=dict(l=5, r=5, t=5, b=5))
+                    st.plotly_chart(fig, use_container_width=True, key=f"cht_{r['sid']}")
+            with col_ctrl:
+                st.write("### ")
+                if st.button("❤️" if not is_fav else "🗑️", key=f"f_{r['sid']}", use_container_width=True):
+                    if is_fav: del st.session_state.favorites[r['sid']]
+                    else: st.session_state.favorites[r['sid']] = r['name']
+                    # 注意：這裡不更新 last_config，所以觸發 rerun 時不會進入自動掃描邏輯
+                    st.rerun() 
 else:
-    st.warning("⚠️ 尚無資料，請點擊搜尋或調整側邊勾選開關。")
+    st.info("模式切換成功，請點擊搜尋或調整勾選框。" if app_mode == "🔍 手動模式" else "目前無符合條件之個股。")
