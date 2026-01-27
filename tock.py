@@ -25,53 +25,36 @@ def load_db():
     return {"2330.TW": "台積電", "2603.TW": "長榮"}
 
 # ==========================================
-# 2. 核心分析引擎 (修正數據抓取與顯示邏輯)
+# 2. 核心分析引擎 (個股優先顯示)
 # ==========================================
 def run_analysis(sid, name, df, config, is_manual=False):
     if df is None or df.empty: return None
-    try:
-        # 確保 df 為標準格式 (處理 yf 下載的 Single/MultiIndex 差異)
-        df = df.copy().dropna()
-        if len(df) < 20: return None
-        
-        c = float(df["Close"].iloc[-1])
-        v_last = df["Volume"].iloc[-1]
-        
-        # 形態計算
-        lb = config.get("p_lookback", 15)
-        x = np.arange(lb)
-        h, l = df["High"].iloc[-lb:].values, df["Low"].iloc[-lb:].values
-        sh, ih, _, _, _ = linregress(x, h)
-        sl, il, _, _, _ = linregress(x, l)
-        
-        active_hits = []
-        if (sh < -0.001 and sl > 0.001): active_hits.append("📐三角收斂")
-        if (abs(sh) < 0.03 and abs(sl) < 0.03): active_hits.append("📦箱型整理")
-        v_avg = df["Volume"].iloc[-21:-1].mean()
-        if (v_last > v_avg * 1.8): active_hits.append("🚀今日爆量")
-        
-        # 顯示條件判斷
-        should_show = is_manual # 手動模式或追蹤清單強制顯示
-        if not is_manual:
-            hit_match = any([
-                config.get("check_tri") and "📐" in "".join(active_hits),
-                config.get("check_box") and "📦" in "".join(active_hits),
-                config.get("check_vol") and "🚀" in "".join(active_hits)
-            ])
-            should_show = hit_match
-            ma_m = df["Close"].rolling(config.get("p_ma_m", 20)).mean().iloc[-1]
-            if config.get("f_ma_filter") and c < ma_m: should_show = False
-            
-        if should_show:
-            return {
-                "收藏": sid in st.session_state.favorites,
-                "sid": sid, "名稱": name, "現價": round(c, 2), 
-                "符合訊號": ", ".join(active_hits) if active_hits else "🔍觀察中",
-                "Yahoo": f"https://tw.stock.yahoo.com/quote/{sid.split('.')[0]}.TW",
-                "df": df, "lines": (sh, ih, sl, il, x)
-            }
-    except: pass
-    return None
+    df = df.copy().dropna()
+    if len(df) < 5: return None  # 避免完全空資料
+
+    c = float(df["Close"].iloc[-1])
+
+    # 個股優先顯示，訊號欄位保留
+    active_hits = ["🔍個股優先顯示"]
+
+    # 計算支撐/壓力線 (最近 p_lookback 天)
+    lb = min(config.get("p_lookback", 15), len(df))
+    x = np.arange(lb)
+    h, l = df["High"].iloc[-lb:].values, df["Low"].iloc[-lb:].values
+    sh, ih, _, _, _ = linregress(x, h)  # 壓力線
+    sl, il, _, _, _ = linregress(x, l)  # 支撐線
+
+    # lines 用於 K 線圖 (保持原結構)
+    return {
+        "收藏": sid in st.session_state.favorites,
+        "sid": sid,
+        "名稱": name,
+        "現價": round(c, 2),
+        "符合訊號": ", ".join(active_hits),
+        "Yahoo": f"https://tw.stock.yahoo.com/quote/{sid.split('.')[0]}.TW",
+        "df": df,
+        "lines": (sh, ih, sl, il, x)
+    }
 
 # ==========================================
 # 3. Sidebar 控制面板 (依模式自動簡化)
@@ -125,47 +108,47 @@ if app_mode == "🔍 手動模式":
     
     if manual_exec and s_input:
         codes = [c.strip().upper() + ".TW" if "." not in c else c.strip().upper() for c in s_input.replace("，", ",").split(",") if c.strip()]
+        temp = []
         with st.spinner("抓取中..."):
-            temp = []
             for s in codes:
-                # 修正單筆下載問題：強迫不使用 group_by 確保 df 格式正確
                 df = yf.download(s, period="6mo", progress=False)
                 if not df.empty:
                     res = run_analysis(s, full_db.get(s, s.split('.')[0]), df, config, is_manual=True)
-                    if res: temp.append(res)
-            st.session_state.results_data = temp
+                    temp.append(res)
+                else:
+                    st.warning(f"{s} 沒抓到資料")
+        st.session_state.results_data = temp
 
 # B. 自動掃描
 elif app_mode == "⚡ 自動掃描" and (trigger_scan or not st.session_state.results_data):
-    all_codes = list(full_db.keys())[:config['scan_limit']]
+    all_codes = list(full_db.keys())[:config.get('scan_limit', 50)]
+    temp = []
     with st.status("📡 市場掃描中...") as status:
         data = yf.download(all_codes, period="6mo", group_by='ticker', progress=False)
-        temp = []
         for s in all_codes:
             df = data[s] if len(all_codes) > 1 else data
-            if not df.empty and (df["Volume"].iloc[-1] / 1000 >= config['min_v']):
-                res = run_analysis(s, full_db.get(s, "未知"), df, config)
-                if res: temp.append(res)
-        st.session_state.results_data = temp
-        status.update(label="✅ 掃描完成", state="complete")
+            if not df.empty:
+                res = run_analysis(s, full_db.get(s, s.split('.')[0]), df, config)
+                temp.append(res)
+    st.session_state.results_data = temp
+    status.update(label="✅ 掃描完成", state="complete")
 
-# C. 追蹤清單 (每次切回自動重抓最新的)
+# C. 追蹤清單
 elif app_mode == "❤️ 追蹤清單" and not st.session_state.results_data:
     if st.session_state.favorites:
+        temp = []
         with st.spinner("更新追蹤清單..."):
-            temp = []
             for s in st.session_state.favorites:
                 df = yf.download(s, period="6mo", progress=False)
                 if not df.empty:
                     res = run_analysis(s, full_db.get(s, s), df, config, is_manual=True)
-                    if res: temp.append(res)
-            st.session_state.results_data = temp
+                    temp.append(res)
+        st.session_state.results_data = temp
 
 # ==========================================
 # 5. 渲染 (表格與 K 線)
 # ==========================================
 if st.session_state.results_data:
-    # 只顯示符合目前模式的資料
     d_data = st.session_state.results_data
     if app_mode == "❤️ 追蹤清單":
         d_data = [r for r in d_data if r['sid'] in st.session_state.favorites]
@@ -184,10 +167,12 @@ if st.session_state.results_data:
         with st.expander(f"📈 {r['sid']} {r['名稱']} | {r['符合訊號']}", expanded=True):
             df_t, (sh, ih, sl, il, x) = r["df"].iloc[-60:], r["lines"]
             fig = go.Figure(data=[go.Candlestick(x=df_t.index, open=df_t['Open'], high=df_t['High'], low=df_t['Low'], close=df_t['Close'])])
-            fig.add_scatter(x=df_t.index[-len(x):], y=sh*x+ih, mode='lines', line=dict(color='red', dash='dash'), name='壓力')
-            fig.add_scatter(x=df_t.index[-len(x):], y=sl*x+il, mode='lines', line=dict(color='green', dash='dash'), name='支撐')
+            # 繪製支撐/壓力線
+            if len(x) >= 2:
+                x_plot = df_t.index[-len(x):]
+                fig.add_scatter(x=x_plot, y=sh*x + ih, mode='lines', line=dict(color='red', dash='dash'), name='壓力')
+                fig.add_scatter(x=x_plot, y=sl*x + il, mode='lines', line=dict(color='green', dash='dash'), name='支撐')
             fig.update_layout(height=400, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig, use_container_width=True, key=f"k_{r['sid']}_{app_mode}")
 else:
     st.info("尚無數據。手動模式請輸入代碼後按搜尋。")
-
