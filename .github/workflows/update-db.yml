@@ -1,38 +1,41 @@
-name: 自動更新電子股資料庫 JSON
+name: 自動更新股票資料庫
 
 on:
   schedule:
-    - cron: '0 9 * * *' # 每天下午 5 點 (UTC+8) 更新
+    - cron: '0 9 * * *' # 每天台灣時間 17:00 執行 (UTC 9:00)
   push:
-    branches: [ main ]
-  workflow_dispatch:
+    branches: [ main ] # 當你 push 程式碼時也會觸發
+  workflow_dispatch:   # 允許你在 GitHub 介面手動點擊執行
 
 jobs:
-  update-db:
+  update-process:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # 賦予寫入權限，否則無法 push json 檔案
       
     steps:
-    - uses: actions/checkout@v4
+    - name: 檢出代碼
+      uses: actions/checkout@v4
 
-    - uses: actions/setup-python@v5
+    - name: 設定 Python 環境
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
 
-    - name: 安裝依賴
+    - name: 安裝必要套件
       run: |
-        pip install requests beautifulsoup4 tqdm pandas yfinance scipy plotly streamlit streamlit-autorefresh
+        pip install requests beautifulsoup4
 
-    - name: 執行更新
+    - name: 執行資料庫更新程式
       run: |
-        # 關鍵點：執行檔名必須完全匹配 tock.py
-        python tock.py
+        # 這裡執行你專門用來抓證交所資料的 update_db.py
+        python update_db.py
 
-    - name: Commit & Push
+    - name: 提交並推送更新後的 JSON
       run: |
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
-        git add taiwan_electronic_stocks.json
-        git commit -m "更新最新股價資料庫 (由 tock.py 觸發)" || exit 0
+        git add taiwan_full_market.json
+        # 如果檔案沒有變動，commit 會失敗，所以加上 || exit 0
+        git commit -m "🤖 自動更新台股清單 JSON" || exit 0
         git push
