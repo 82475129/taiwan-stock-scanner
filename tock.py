@@ -2,18 +2,19 @@ import streamlit as st
 import pandas as pd
 import numpy as np
 import yfinance as yf
+import plotly.graph_objects as go
 from scipy.stats import linregress
 import os, json
 
 # ==========================================
 # 1. 系統初始化與狀態管理
 # ==========================================
-st.set_page_config(page_title="台股 Pro 戰情表格", layout="wide")
+st.set_page_config(page_title="台股 Pro 旗艦戰情室", layout="wide")
 
 if 'favorites' not in st.session_state:
-    st.session_state.favorites = set()  # 使用 set 存代碼更快速
-if 'results_df' not in st.session_state:
-    st.session_state.results_df = pd.DataFrame() 
+    st.session_state.favorites = set() 
+if 'results_data' not in st.session_state:
+    st.session_state.results_data = [] 
 if 'last_config_key' not in st.session_state:
     st.session_state.last_config_key = ""
 
@@ -28,7 +29,7 @@ def load_db():
     return {"2330.TW": "台積電"}
 
 # ==========================================
-# 2. 專業分析引擎 (回傳 dict 用於組建 DataFrame)
+# 2. 專業分析引擎
 # ==========================================
 def run_analysis(sid, name, df, config, is_manual=False):
     if df is None or len(df) < 60: return None
@@ -57,10 +58,16 @@ def run_analysis(sid, name, df, config, is_manual=False):
         if config.get("check_rsi") and (rsi < 35 or rsi > 70): active_hits.append(f"🌡️RSI")
 
         if is_manual or (bool(active_hits) and (not config.get("f_ma_filter") or c >= ma_m)):
+            # 生成 Yahoo 股市連結
+            pure_id = sid.split('.')[0]
+            yahoo_url = f"https://tw.stock.yahoo.com/quote/{pure_id}.TW"
+            
             return {
                 "收藏": sid in st.session_state.favorites,
                 "代碼": sid, "名稱": name, "現價": round(c, 2), 
-                "符合訊號": ", ".join(active_hits) if active_hits else "🔍觀察"
+                "符合訊號": ", ".join(active_hits) if active_hits else "🔍觀察",
+                "Yahoo": yahoo_url, # 新增連結欄位
+                "df": df, "lines": (sh, ih, sl, il, x)
             }
     except: pass
     return None
@@ -73,10 +80,9 @@ with st.sidebar:
     st.title("🛡️ 戰術控制台")
     app_mode = st.radio("模式切換", ["⚡ 自動掃描", "🔍 手動模式", "❤️ 追蹤清單"])
     
-    # 邏輯：換到手動立即清空
     if "m_state" not in st.session_state: st.session_state.m_state = app_mode
     if app_mode != st.session_state.m_state:
-        if app_mode == "🔍 手動模式": st.session_state.results_df = pd.DataFrame()
+        if app_mode == "🔍 手動模式": st.session_state.results_data = []
         st.session_state.m_state = app_mode
         st.rerun()
 
@@ -90,91 +96,96 @@ with st.sidebar:
         
         if app_mode == "🔍 手動模式":
             st.divider()
-            s_input = st.text_input("輸入個股代碼", placeholder="例如: 2330, 2603")
-            manual_exec = st.button("🔍 執行手動搜尋", type="primary", use_container_width=True)
-        else:
-            manual_exec = False
+            s_input = st.text_input("輸入代碼", placeholder="2330, 2603")
+            manual_exec = st.button("🔍 執行搜尋", type="primary", use_container_width=True)
+        else: manual_exec = False
 
         with st.expander("🛠️ 進階參數", expanded=True):
             p_ma_m = st.number_input("均線", value=20)
             p_lookback = st.slider("形態回溯", 10, 30, 15)
             f_ma_filter = st.checkbox("限 MA20 之上", True)
-            min_v = st.number_input("成交量門檻", value=500)
+            min_v = st.number_input("張數門檻", value=500)
             scan_limit = st.slider("上限", 50, 500, 100)
             config = locals()
 
-        # 自動模式勾選即掃描邏輯
         current_key = f"{app_mode}-{check_tri}-{check_box}-{check_vol}-{check_rsi}-{min_v}-{scan_limit}"
         trigger_scan = (app_mode == "⚡ 自動掃描" and current_key != st.session_state.last_config_key)
         if trigger_scan: st.session_state.last_config_key = current_key
-    else:
-        trigger_scan = False
+    else: trigger_scan = False
 
 # ==========================================
-# 4. 掃描與資料組建
+# 4. 資料處理區
 # ==========================================
 st.title(f"📍 {app_mode}")
 
-if app_mode == "⚡ 自動掃描" and (trigger_scan or st.session_state.results_df.empty):
+if app_mode == "⚡ 自動掃描" and (trigger_scan or not st.session_state.results_data):
     codes = list(full_db.keys())[:scan_limit]
     with st.status("📡 掃描中...", expanded=False) as status:
         data = yf.download(codes, period="6mo", group_by='ticker', progress=False)
-        rows = []
+        temp_list = []
         for sid in codes:
             df = data[sid] if len(codes) > 1 else data
             if not df.empty and (df["Volume"].iloc[-1] / 1000 >= min_v):
                 res = run_analysis(sid, full_db.get(sid, "未知"), df, config)
-                if res: rows.append(res)
-        st.session_state.results_df = pd.DataFrame(rows)
+                if res: temp_list.append(res)
+        st.session_state.results_data = temp_list
         status.update(label="✅ 完成", state="complete")
 
 elif app_mode == "🔍 手動模式" and manual_exec:
     codes = [c.strip()+".TW" if "." not in c else c.strip().upper() for c in s_input.split(",")] if s_input else list(full_db.keys())[:scan_limit]
-    with st.spinner("搜尋中..."):
+    with st.spinner("抓取中..."):
         data = yf.download(codes, period="6mo", group_by='ticker', progress=False)
-        rows = []
+        temp_list = []
         for sid in codes:
             df = data[sid] if len(codes) > 1 else data
             if not df.empty:
                 res = run_analysis(sid, full_db.get(sid, "未知"), df, config, is_manual=bool(s_input))
-                if res: rows.append(res)
-        st.session_state.results_df = pd.DataFrame(rows)
+                if res: temp_list.append(res)
+        st.session_state.results_data = temp_list
 
 # ==========================================
-# 5. 表格顯示區 (使用 Data Editor 實現愛心連動)
+# 5. 渲染顯示區 (表格 + K線 + 連結)
 # ==========================================
-df_to_show = st.session_state.results_df
-
+display_data = st.session_state.results_data
 if app_mode == "❤️ 追蹤清單":
-    if not st.session_state.results_df.empty:
-        df_to_show = st.session_state.results_df[st.session_state.results_df['代碼'].isin(st.session_state.favorites)]
-    else:
-        st.info("請先從掃描結果中勾選收藏。")
-        st.stop()
+    display_data = [r for r in st.session_state.results_data if r['sid'] in st.session_state.favorites]
 
-if not df_to_show.empty:
-    st.subheader("📊 戰情即時數據 (勾選第一欄即可收藏)")
+if display_data:
+    # --- 表格區 ---
+    st.subheader("📊 概覽表格 (可按愛心、可點 Yahoo 連結)")
+    table_df = pd.DataFrame([{k: v for k, v in r.items() if k not in ['df', 'lines']} for r in display_data])
     
-    # 使用 data_editor 讓表格可以互動
     edited_df = st.data_editor(
-        df_to_show,
+        table_df,
         column_config={
-            "收藏": st.column_config.CheckboxColumn("收藏 ❤️", default=False),
+            "收藏": st.column_config.CheckboxColumn("❤️", default=False),
             "現價": st.column_config.NumberColumn("現價", format="$%.2f"),
-            "代碼": st.column_config.TextColumn("代碼"),
+            "Yahoo": st.column_config.LinkColumn("Yahoo 連結", display_text="點我開頁面"),
         },
-        disabled=["代碼", "名稱", "現價", "符合訊號"], # 只有收藏欄位能點
-        hide_index=True,
-        use_container_width=True,
-        key="main_table"
+        disabled=["代碼", "名稱", "現價", "符合訊號", "Yahoo"],
+        hide_index=True, use_container_width=True, key=f"tbl_{app_mode}"
     )
 
-    # 處理表格勾選連動：當 edited_df 改變時，更新 session_state.favorites
+    # 同步收藏狀態 (免重掃)
     new_favs = set(edited_df[edited_df["收藏"] == True]["代碼"])
     if new_favs != st.session_state.favorites:
         st.session_state.favorites = new_favs
-        # 更新原始數據中的收藏狀態，確保切換模式時狀態還在
-        st.session_state.results_df["收藏"] = st.session_state.results_df["代碼"].apply(lambda x: x in new_favs)
+        for r in st.session_state.results_data:
+            r["收藏"] = r["sid"] in new_favs
         st.rerun()
+
+    st.divider()
+
+    # --- K 線圖區 ---
+    for r in display_data:
+        is_fav = r['sid'] in st.session_state.favorites
+        with st.expander(f"{'❤️' if is_fav else '🔍'} {r['sid']} {r['name']} | K線分析", expanded=True):
+            df_t, (sh, ih, sl, il, x) = r["df"].iloc[-50:], r["lines"]
+            fig = go.Figure(data=[go.Candlestick(x=df_t.index, open=df_t['Open'], high=df_t['High'], low=df_t['Low'], close=df_t['Close'], name='K線')])
+            if any(s in r["符合訊號"] for s in ["三角", "箱型"]):
+                fig.add_scatter(x=df_t.index[-config["p_lookback"]:], y=sh*x+ih, mode='lines', line=dict(color='red', dash='dash'))
+                fig.add_scatter(x=df_t.index[-config["p_lookback"]:], y=sl*x+il, mode='lines', line=dict(color='green', dash='dash'))
+            fig.update_layout(height=450, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=10, b=10))
+            st.plotly_chart(fig, use_container_width=True, key=f"k_{r['sid']}")
 else:
-    st.warning("⚠️ 目前無資料，請調整勾選框或執行手動搜尋。")
+    st.info("尚無數據。")
