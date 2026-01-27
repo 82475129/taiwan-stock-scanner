@@ -11,9 +11,8 @@ import sys, json, os
 # ==========================================
 DB_FILES = ["taiwan_electronic_stocks.json", "taiwan_full_market.json"]
 
-st.set_page_config(page_title="台股 Pro-X 形態大師", layout="wide")
+st.set_page_config(page_title="台股 Pro-X 雙模大師", layout="wide")
 
-# 初始化最愛清單 (Session 儲存，重新整理前都會在)
 if 'favorites' not in st.session_state:
     st.session_state.favorites = {} 
 
@@ -24,7 +23,6 @@ def load_and_fix_db():
     try:
         with open(target_file, "r", encoding="utf-8") as f:
             raw_data = json.load(f)
-        # 針對截圖中提到的 .TW.TW 進行自動修正
         return {k.replace(".TW.TW", ".TW").strip(): v for k, v in raw_data.items()}
     except: return {"2330.TW": "台積電"}
 
@@ -78,109 +76,101 @@ sectors = ["全部"] + sorted(list(set(get_auto_sector(c) for c in all_codes)))
 with st.sidebar:
     st.title("🏹 交易監控中心")
     
-    # --- A. 我的最愛區塊 ---
-    with st.container():
-        st.subheader("❤️ 我的最愛清單")
-        if not st.session_state.favorites:
-            st.info("尚未收藏標的")
-        else:
-            # 以簡潔列表呈現
-            for fid, fname in list(st.session_state.favorites.items()):
-                fcol1, fcol2 = st.columns([4, 1])
-                fcol1.markdown(f"**{fid}** {fname}")
-                if fcol2.button("🗑️", key=f"del_{fid}"):
-                    del st.session_state.favorites[fid]
-                    st.rerun()
-            if st.button("清除全部收藏"):
-                st.session_state.favorites = {}
-                st.rerun()
+    # --- A. 模式切換 (最重要) ---
+    app_mode = st.radio("🛰️ 掃描模式", ["⚡ 自動雷達 (變動即掃)", "🛠️ 手動工具 (進階功能)"])
     
     st.divider()
     
-    # --- B. 掃描控制參數 ---
-    st.subheader("⚙️ 掃描參數")
-    selected_sector = st.selectbox("產業分類", sectors)
+    # --- B. 我的最愛 ---
+    st.subheader("❤️ 我的最愛")
+    if not st.session_state.favorites:
+        st.caption("尚未收藏標的")
+    else:
+        for fid, fname in list(st.session_state.favorites.items()):
+            fcol1, fcol2 = st.columns([4, 1])
+            fcol1.markdown(f"**{fid}** {fname}")
+            if fcol2.button("🗑️", key=f"sidebar_del_{fid}"):
+                del st.session_state.favorites[fid]
+                st.rerun()
+
+    st.divider()
     
-    st.write("形態過濾")
+    # --- C. 共有參數 ---
+    st.subheader("⚙️ 篩選參數")
+    selected_sector = st.selectbox("產業分類", sectors)
     f_tri = st.checkbox("📐 三角收斂", True)
     f_box = st.checkbox("📦 箱型整理", True)
     f_vol = st.checkbox("🚀 今日爆量", False)
     f_ma20 = st.checkbox("📈 股價 > MA20", False)
     config = {"f_tri": f_tri, "f_box": f_box, "f_vol": f_vol, "f_ma20": f_ma20}
     
-    st.divider()
     min_v = st.number_input("成交量門檻 (張)", value=500, step=100)
-    scan_limit = st.slider("掃描上限 (由大到小)", 50, 2000, 100)
-    
-    st.caption("版本: Pro-X Auto v2.1")
+    scan_limit = st.slider("掃描上限", 50, 2000, 100)
 
 # ==========================================
-# 3. 主畫面掃描邏輯
+# 3. 主畫面邏輯
 # ==========================================
-st.title("📈 形態大師：即時雷達")
+st.title(f"📈 {app_mode}")
 
+# 準備掃描名單
 active_codes = all_codes if selected_sector == "全部" else [c for c in all_codes if get_auto_sector(c) == selected_sector]
 results = []
+trigger_scan = False
 
-# 自動執行掃描
-with st.status(f"📡 掃描中: {selected_sector}...", expanded=False) as status:
-    v_df = yf.download(active_codes, period="5d", progress=False)["Volume"]
-    latest_v = v_df.iloc[-1] if not v_df.iloc[-1].isna().all() else v_df.iloc[-2]
-    vol_filtered = (latest_v / 1000).dropna()
-    targets = vol_filtered[vol_filtered >= min_v].sort_values(ascending=False).head(scan_limit).index.tolist()
-    
-    if targets:
-        batch_size = 50
-        for i in range(0, len(targets), batch_size):
-            batch = targets[i : i + batch_size]
-            h_data = yf.download(batch, period="3mo", group_by="ticker", progress=False)
-            for sid in batch:
-                df_sid = h_data[sid] if len(batch) > 1 else h_data
-                res = run_analysis(df_sid, sid, full_db.get(sid, "未知"), config)
-                if res: results.append(res)
-    status.update(label=f"✅ 完成！找到 {len(results)} 檔符合標的", state="complete")
+if app_mode == "⚡ 自動雷達 (變動即掃)":
+    trigger_scan = True # 自動模式隨時觸發
+else:
+    # --- 手動模式專屬功能區 ---
+    st.info("🛠️ 手動模式：調整參數後請點擊下方按鈕開始掃描。")
+    m_col1, m_col2 = st.columns(2)
+    custom_ids = m_col1.text_area("✍️ 自訂掃描名單 (代碼逗號隔開)", placeholder="例如: 2330, 2303, 2454")
+    if m_col2.button("🚀 開始手動全域掃描", type="primary", use_container_width=True):
+        if custom_ids:
+            active_codes = [c.strip() + ".TW" if "." not in c else c.strip() for c in custom_ids.split(",")]
+        trigger_scan = True
+
+# 執行掃描邏輯
+if trigger_scan:
+    with st.status(f"📡 掃描中: {selected_sector}...", expanded=False) as status:
+        v_df = yf.download(active_codes, period="5d", progress=False)["Volume"]
+        latest_v = v_df.iloc[-1] if not v_df.iloc[-1].isna().all() else v_df.iloc[-2]
+        vol_filtered = (latest_v / 1000).dropna()
+        targets = vol_filtered[vol_filtered >= min_v].sort_values(ascending=False).head(scan_limit).index.tolist()
+        
+        if targets:
+            batch_size = 50
+            for i in range(0, len(targets), batch_size):
+                batch = targets[i : i + batch_size]
+                h_data = yf.download(batch, period="3mo", group_by="ticker", progress=False)
+                for sid in batch:
+                    df_sid = h_data[sid] if len(batch) > 1 else h_data
+                    res = run_analysis(df_sid, sid, full_db.get(sid, "未知"), config)
+                    if res: results.append(res)
+        status.update(label=f"✅ 完成！找到 {len(results)} 檔符合標的", state="complete")
 
 # ==========================================
-# 4. 資料視覺化 (表格 + 圖表)
+# 4. 結果顯示
 # ==========================================
 if results:
-    # --- 頂部總覽表格 ---
-    st.subheader("📊 形態偵測總覽 (代碼連動 Yahoo)")
+    # 頂部表格
     summary_df = pd.DataFrame([{
         "代碼": f"https://tw.stock.yahoo.com/quote/{r['sid']}",
-        "名稱": r["name"],
-        "現價": r["price"],
-        "成交量(張)": r["vol"],
-        "符合形態": " / ".join(r["hits"]),
-        "SID": r['sid'] # 隱藏用
+        "名稱": r["name"], "現價": r["price"], "成交量(張)": r["vol"],
+        "符合形態": " / ".join(r["hits"])
     } for r in results])
 
-    st.dataframe(
-        summary_df,
-        column_config={
-            "代碼": st.column_config.LinkColumn("代碼", display_text=r"quote/(.*)$"),
-            "SID": None
-        },
-        hide_index=True,
-        use_container_width=True
-    )
+    st.dataframe(summary_df, column_config={"代碼": st.column_config.LinkColumn("代碼", display_text=r"quote/(.*)$")}, hide_index=True, use_container_width=True)
 
-    st.divider()
-    
-    # --- 詳細圖表區 ---
-    st.subheader("🖼️ 技術形態細節")
+    # 詳細圖表區
     for item in results:
-        # 佈置標題與收藏按鈕
         col_title, col_fav = st.columns([5, 1])
         with col_title:
             exp = st.expander(f"🔍 {item['sid']} {item['name']} | {' + '.join(item['hits'])}", expanded=False)
         with col_fav:
             is_fav = item['sid'] in st.session_state.favorites
-            if st.button("❤️" if is_fav else "🤍 收藏", key=f"btn_{item['sid']}"):
-                if is_fav:
-                    del st.session_state.favorites[item['sid']]
-                else:
-                    st.session_state.favorites[item['sid']] = item['name']
+            if st.button("❤️" if is_fav else "🤍 收藏", key=f"main_btn_{item['sid']}"):
+                if is_fav: del st.session_state.favorites[item['sid']]
+                else: st.session_state.favorites[item['sid']] = item['name']
                 st.rerun()
 
         with exp:
@@ -190,5 +180,5 @@ if results:
             fig.add_scatter(x=df_t.index, y=sl*x+il, mode='lines', line=dict(color='green', dash='dash'), name='支撐')
             fig.update_layout(height=400, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=10, b=10))
             st.plotly_chart(fig, use_container_width=True)
-else:
-    st.warning("💡 目前條件下沒有符合形態的股票。")
+elif trigger_scan:
+    st.warning("💡 沒有符合條件的標的。")
