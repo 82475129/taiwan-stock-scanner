@@ -1,15 +1,15 @@
 # -*- coding: utf-8 -*-
 """
-台股 Pro 旗艦戰情室 - 完整本地版（基於你的 GitHub 專案）
-專案結構對應：
+台股 Pro 旗艦戰情室 - 完整本地版（基於 GitHub 專案結構）
+專案對應檔案：
 - taiwan_full_market.json   → 股票清單（Actions 自動更新）
 - taiwan_stock_prices.pkl   → 價格快取（本地儲存）
-- update_db.py / update stock.py → 輔助更新腳本（可忽略）
+- requirements.txt          → 依賴套件
 - .github/workflows/        → 自動更新 JSON 的 workflow
-- requirements.txt          → 依賴清單
+- update_db.py / update stock.py → 輔助更新腳本（可選）
 
-主要功能：
-- 股票清單直接從 JSON 讀取（無需網路抓取 HTML，無 lxml / html5lib 依賴）
+主要功能總覽：
+- 股票清單從 JSON 讀取（無網路抓取 HTML，無 lxml / html5lib 依賴）
 - 價格資料使用 pickle 快取（解決 yfinance rate limit）
 - 爆量計算：前 5 天平均成交量 × 1.5 倍
 - 掃描上限預設 200，可調至 2000
@@ -17,15 +17,17 @@
 - K 線圖 + 壓力/支撐趨勢線（Plotly）
 - 側邊欄「更新價格快取」按鈕（批次下載 + 進度條）
 - 收藏功能跨模式共享（表格勾選即時同步）
-- 豐富錯誤處理、使用者提示、進度顯示
+- 豐富錯誤處理、使用者提示、進度顯示、防呆邏輯（解決 AttributeError）
 
 程式碼行數：超過 700 行（含詳細註解、空白行、結構化分段）
 
 使用步驟：
-1. 確保 taiwan_full_market.json 存在（你的 Actions 已自動更新）
+1. 確保 taiwan_full_market.json 存在（Actions 已自動更新）
 2. 第一次執行 → 點側邊欄「更新全市場價格快取」（需 10–30 分鐘）
 3. 之後掃描全部從本地讀取，速度極快
 4. 資料僅供參考，非投資建議
+
+最後更新：2026 年 1 月
 """
 
 import streamlit as st
@@ -45,13 +47,15 @@ import os
 import sys
 import traceback
 
+# ================================
 # 忽略常見警告，讓介面更乾淨
+# ================================
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=pd.errors.SettingWithCopyWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
 
 # ================================
-# 1. 頁面基本設定
+# 頁面基本設定
 # ================================
 st.set_page_config(
     page_title="台股 Pro 旗艦戰情室 - 完整本地版",
@@ -66,7 +70,7 @@ st.set_page_config(
 )
 
 # ================================
-# 2. Session State 初始化與管理
+# Session State 初始化與管理
 # ================================
 # 收藏清單（股票代碼 set）
 if 'favorites' not in st.session_state:
@@ -80,7 +84,7 @@ if 'results_data' not in st.session_state:
 if 'last_mode' not in st.session_state:
     st.session_state.last_mode = None
 
-# 股票基本資料庫（symbol → {name, category}）
+# 股票基本資料庫（symbol → {name, category} 或其他結構）
 if 'full_db' not in st.session_state:
     st.session_state.full_db = None
 
@@ -93,38 +97,61 @@ if 'last_cache_update' not in st.session_state:
     st.session_state.last_cache_update = None
 
 # ================================
-# 3. 檔案路徑定義
+# 檔案路徑定義
 # ================================
 STOCK_JSON_PATH = Path("taiwan_full_market.json")
 PRICE_CACHE_PATH = Path("taiwan_stock_prices.pkl")
 
 # ================================
-# 4. 載入股票基本資料（從本地 JSON）
+# 載入股票基本資料（從本地 JSON）
 # ================================
 @st.cache_data(ttl=86400 * 1, show_spinner="載入股票清單（本地 JSON）...")
 def load_stock_database():
     """
     從專案中的 taiwan_full_market.json 載入股票清單
-    格式預期：{ "2330.TW": {"name": "台積電", "category": "電子"}, ... }
+    支援多種結構防呆：
+    - { "2330.TW": {"name": "...", "category": "..."} }
+    - { "2330.TW": "台積電" }
+    - 其他格式轉為 fallback
     """
     if STOCK_JSON_PATH.exists():
         try:
             with open(STOCK_JSON_PATH, 'r', encoding='utf-8') as f:
-                db = json.load(f)
-            # 基本驗證
-            if not isinstance(db, dict) or len(db) < 10:
-                raise ValueError("JSON 格式異常或檔內容太少")
-            st.success(f"股票清單載入完成：{len(db)} 檔（來自自動更新）")
-            return db
+                raw_data = json.load(f)
+
+            # 標準化成 {symbol: {"name": "...", "category": "..."}} 格式
+            normalized_db = {}
+
+            for symbol, value in raw_data.items():
+                if isinstance(value, dict):
+                    name = value.get("name", symbol)
+                    category = value.get("category", "未知")
+                elif isinstance(value, str):
+                    name = value
+                    category = "未知"
+                elif isinstance(value, list) and len(value) >= 1:
+                    name = value[0]
+                    category = value[1] if len(value) > 1 else "未知"
+                else:
+                    name = str(value)
+                    category = "未知"
+
+                normalized_db[symbol] = {"name": name, "category": category}
+
+            if len(normalized_db) < 10:
+                raise ValueError("JSON 內容太少")
+
+            st.success(f"股票清單載入完成：{len(normalized_db)} 檔（來自自動更新）")
+            return normalized_db
+
         except json.JSONDecodeError as je:
             st.error(f"JSON 解析失敗：{je}")
         except Exception as e:
             st.error(f"讀取 taiwan_full_market.json 失敗：{str(e)}")
             traceback.print_exc(file=sys.stderr)
-    else:
-        st.warning("未找到 taiwan_full_market.json，使用 fallback 資料")
 
     # fallback 資料（少量範例）
+    st.warning("JSON 載入失敗或未找到，使用 fallback 資料")
     fallback_db = {
         "2330.TW": {"name": "台積電", "category": "電子"},
         "2454.TW": {"name": "聯發科", "category": "電子"},
@@ -143,7 +170,7 @@ if st.session_state.full_db is None:
 full_db = st.session_state.full_db
 
 # ================================
-# 5. 價格快取管理函式
+# 價格快取管理函式
 # ================================
 def load_price_cache():
     """從 pickle 載入價格快取"""
@@ -172,7 +199,7 @@ if st.session_state.price_cache is None:
 price_cache = st.session_state.price_cache
 
 # ================================
-# 6. 抓取價格資料（優先本地快取）
+# 抓取價格資料（優先本地快取）
 # ================================
 def fetch_price(symbol: str) -> pd.DataFrame:
     """
@@ -203,7 +230,7 @@ def fetch_price(symbol: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 # ================================
-# 7. 核心技術分析函式
+# 核心技術分析函式
 # ================================
 def run_analysis(
     sid: str,
@@ -296,7 +323,7 @@ def run_analysis(
     return None
 
 # ================================
-# 8. 側邊欄控制面板
+# 側邊欄控制面板
 # ================================
 st.sidebar.title("🛡️ 台股 Pro 戰術控制台")
 st.sidebar.markdown(f"**股票清單**：{len(full_db)} 檔（自動更新）")
@@ -411,20 +438,38 @@ if st.session_state.last_cache_update:
     st.sidebar.caption(f"最後更新時間：{st.session_state.last_cache_update.strftime('%Y-%m-%d %H:%M')}")
 
 # ================================
-# 9. 主畫面內容
+# 主畫面內容
 # ================================
 st.title(f"📈 {mode_selected}")
 st.caption(f"目前模式：{mode_selected} | 產業：{industry_filter} | 總標的：{len(full_db)} 檔")
 
-# 過濾符合產業的代碼清單
+# 過濾符合產業的代碼清單（防呆版 - 解決 AttributeError）
 symbol_list = list(full_db.keys())
 if industry_filter != "全部":
-    symbol_list = [
-        s for s in symbol_list
-        if full_db.get(s, {}).get("category") == industry_filter
-    ]
+    filtered = []
+    for s in symbol_list:
+        value = full_db.get(s)
+        category_value = None
+        
+        if isinstance(value, dict):
+            category_value = value.get("category")
+        elif isinstance(value, str):
+            category_value = "未知"  # 只有名稱時預設未知
+        elif isinstance(value, (list, tuple)):
+            category_value = value[1] if len(value) > 1 else "未知"
+        else:
+            category_value = "未知"
+        
+        if category_value == industry_filter:
+            filtered.append(s)
+    
+    symbol_list = filtered
+    if not symbol_list:
+        st.sidebar.warning(f"找不到產業為「{industry_filter}」的股票，請確認 JSON 是否包含 category 欄位")
 
+# ================================
 # 各模式邏輯
+# ================================
 if mode_selected == "🔍 手動查詢":
     manual_input = st.text_input(
         "請輸入股票代碼（多檔用逗號分隔）",
@@ -440,7 +485,7 @@ if mode_selected == "🔍 手動查詢":
             for code in code_list:
                 sym = code if '.' in code else f"{code}.TW"
                 df_data = fetch_price(sym)
-                stock_name = full_db.get(sym, {}).get("name", code)
+                stock_name = full_db.get(sym, {}).get("name", code) if isinstance(full_db.get(sym), dict) else code
                 analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=True)
                 if analysis_result:
                     results_temp.append(analysis_result)
@@ -459,7 +504,7 @@ elif mode_selected == "⚖️ 條件篩選":
             progress_bar = st.progress(0)
             for idx, sym in enumerate(scan_symbols):
                 df_data = fetch_price(sym)
-                stock_name = full_db.get(sym, {}).get("name", "未知")
+                stock_name = full_db.get(sym, {}).get("name", "未知") if isinstance(full_db.get(sym), dict) else "未知"
                 analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=False)
                 if analysis_result:
                     temp_results.append(analysis_result)
@@ -484,7 +529,7 @@ elif mode_selected == "⚡ 自動掃描":
     with st.spinner(f"自動掃描 {len(scan_symbols)} 檔中..."):
         for sym in scan_symbols:
             df_data = fetch_price(sym)
-            stock_name = full_db.get(sym, {}).get("name", "未知")
+            stock_name = full_db.get(sym, {}).get("name", "未知") if isinstance(full_db.get(sym), dict) else "未知"
             analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=False)
             if analysis_result:
                 temp_results.append(analysis_result)
@@ -502,7 +547,7 @@ elif mode_selected == "❤️ 收藏追蹤":
             with st.status("更新收藏股中..."):
                 for sym in list(st.session_state.favorites):
                     df_data = fetch_price(sym)
-                    stock_name = full_db.get(sym, {}).get("name", sym)
+                    stock_name = full_db.get(sym, {}).get("name", sym) if isinstance(full_db.get(sym), dict) else sym
                     analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=True)
                     if analysis_result:
                         temp_results.append(analysis_result)
@@ -510,7 +555,7 @@ elif mode_selected == "❤️ 收藏追蹤":
             st.success(f"更新完成，共 {len(temp_results)} 檔")
 
 # ================================
-# 10. 結果呈現區塊
+# 結果呈現區塊
 # ================================
 display_results = st.session_state.results_data
 
@@ -519,7 +564,7 @@ if mode_selected == "❤️ 收藏追蹤":
     display_results = [item for item in display_results if item["sid"] in st.session_state.favorites]
 
 if display_results:
-    # 表格呈現
+    # 表格資料準備
     table_records = []
     for item in display_results:
         table_records.append({
@@ -624,7 +669,7 @@ else:
         st.caption("目前無符合條件標的，或尚未執行分析")
 
 # ================================
-# 11. 頁尾資訊
+# 頁尾資訊
 # ================================
 st.markdown("---")
 st.caption(
