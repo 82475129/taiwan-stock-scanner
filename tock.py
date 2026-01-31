@@ -644,10 +644,10 @@ elif mode_selected == "❤️ 收藏追蹤":
     else:
         st.subheader(f"收藏清單（{len(fav_syms)} 檔）")
 
-        # 每次進入收藏頁，先清空舊的 results_data，避免累積舊資料
+        # 每次進入收藏頁，先清空舊資料，避免累積
         st.session_state.results_data = []
 
-        # 按鈕更新報價
+        # 更新報價按鈕
         if st.button("🔄 立即更新收藏報價", type="primary"):
             with st.status("更新收藏股中...", expanded=True) as status:
                 temp_results = []
@@ -678,12 +678,14 @@ elif mode_selected == "❤️ 收藏追蹤":
                                 "lines": None
                             }
                         temp_results.append(analysis_result)
+                
                 st.session_state.results_data = temp_results
                 status.update(label=f"更新完成！共處理 {len(temp_results)} 檔", state="complete")
-            st.success("報價更新完成，畫面已刷新")
-            st.rerun()  # 更新後 rerun，讓 K線與表格即時顯示最新
+            
+            st.success("報價更新完成")
+            st.rerun()  # 更新後重新載入畫面
 
-        # 產生 display_results（直接從 fav_syms 重新分析或使用快取）
+        # 產生 display_results（從收藏清單重新產生）
         display_results = []
         seen_sids = set()
         for sym in fav_syms:
@@ -695,13 +697,13 @@ elif mode_selected == "❤️ 收藏追蹤":
             if analysis_result:
                 display_results.append(analysis_result)
             else:
-                # 防呆基本顯示
+                # 防呆
                 if not df_data.empty:
                     current_price = float(df_data['Close'].iloc[-1])
                     ma20 = float(df_data['Close'].rolling(20).mean().iloc[-1]) if len(df_data) >= 20 else None
                     ma60 = float(df_data['Close'].rolling(60).mean().iloc[-1]) if len(df_data) >= 60 else None
                     trend = '🔴 多頭排列' if (ma20 is not None and ma60 is not None and ma20 > ma60) else '🟢 空頭排列'
-                    display_result = {
+                    result = {
                         "收藏": True,
                         "sid": sym,
                         "名稱": stock_name,
@@ -714,16 +716,18 @@ elif mode_selected == "❤️ 收藏追蹤":
                         "df": df_data.copy(),
                         "lines": None
                     }
-                    display_results.append(display_result)
+                    display_results.append(result)
             seen_sids.add(sym)
 
 # ────────────────────────────────────────────────
-# 只在收藏追蹤模式才強制補收藏（其他頁面不補）
+# 強制補收藏只在收藏模式執行（其他頁面不補）
 # ────────────────────────────────────────────────
-if mode_selected == "❤️ 收藏追蹤":
-    # 已經在上面處理，不需再補
-    pass
-# 其他模式不補收藏（符合你「不要其他頁也顯示收藏」）
+# 注意：上面已經在收藏模式處理完畢，所以這裡可以省略或註解
+# 如果你想保留其他模式的補收藏邏輯，再把下面這段取消註解
+# if mode_selected == "❤️ 收藏追蹤":
+#     for fav_sid in list(st.session_state.favorites):
+#         if not any(r["sid"] == fav_sid for r in display_results):
+#             # ... 補的邏輯 ...
 
 # ────────────────────────────────────────────────
 # 結果呈現區塊（所有模式共用）
@@ -747,12 +751,11 @@ if display_results:
 
     is_favorite_mode = (mode_selected == "❤️ 收藏追蹤")
 
-    # 收藏欄位設定：所有頁面都可見可點，但邏輯上限制
     column_config = {
         "收藏": st.column_config.CheckboxColumn(
             "❤️ 收藏",
             width="small",
-            disabled=False  # 表面不禁用，讓未收藏的可以點
+            disabled=not is_favorite_mode   # 只有收藏頁面完全可編輯
         ),
         "Yahoo": st.column_config.LinkColumn("Yahoo", display_text="🔍 Yahoo", width="medium"),
         "現價": st.column_config.NumberColumn(format="%.2f"),
@@ -768,7 +771,6 @@ if display_results:
         key=f"editor_{mode_selected}_{industry_filter or 'all'}"
     )
 
-    # 從表格取得使用者勾選的結果
     new_checked = set(edited_table[edited_table["收藏"] == True]["代碼"].tolist())
 
     col1, col2 = st.columns([1, 4])
@@ -778,30 +780,26 @@ if display_results:
             updated = False
 
             if is_favorite_mode:
-                # 收藏頁面：允許完整更新（新增 + 移除）
                 if new_checked != current_favs:
                     st.session_state.favorites = new_checked
                     updated = True
                     st.success(f"收藏清單已更新！目前總共 {len(new_checked)} 檔")
             else:
-                # 其他頁面：只允許新增，不允許移除
                 to_add = new_checked - current_favs
                 if to_add:
                     st.session_state.favorites.update(to_add)
                     updated = True
-                    st.success(f"已新增 {len(to_add)} 檔到收藏清單！")
-                else:
-                    st.info("沒有新的股票被勾選加入收藏")
+                    st.success(f"已新增 {len(to_add)} 檔到收藏清單")
 
             if updated:
-                st.rerun()  # 更新後刷新畫面，讓勾選狀態即時顯示
+                st.rerun()
 
     with col2:
         pending_add = len(new_checked - st.session_state.favorites)
         if pending_add > 0 and not is_favorite_mode:
             st.caption(f"待新增收藏：{pending_add} 檔（按上方按鈕儲存）")
         elif pending_add == 0 and not is_favorite_mode:
-            st.caption("目前無新收藏變更（已收藏的無法在此取消）")
+            st.caption("目前無新收藏變更")
 
     st.divider()
     st.subheader("個股 K 線與趨勢線詳圖")
@@ -867,7 +865,9 @@ else:
     else:
         st.caption("目前無符合條件標的，或尚未執行分析")
 
-# 頁尾資訊（保持不變）
+# ────────────────────────────────────────────────
+# 頁尾資訊
+# ────────────────────────────────────────────────
 st.markdown("---")
 st.caption(
     "台股 Pro 旗艦戰情室 | "
