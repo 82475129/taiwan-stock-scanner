@@ -251,56 +251,82 @@ def fetch_price(symbol: str) -> pd.DataFrame:
 # ────────────────────────────────────────────────
 #               核心技術分析函式
 # ────────────────────────────────────────────────
-def run_analysis(sid: str, name: str, df: pd.DataFrame, cfg: dict, is_manual: bool = False) -> dict | None:
-    if df.empty or 'Close' not in df.columns or len(df) < 60:
-        return None
+def run_analysis(
+    sid: str,
+    name: str,
+    df: pd.DataFrame,
+    cfg: dict,
+    is_manual: bool = False
+) -> dict | None:
+    """
+    分析單檔股票走勢與訊號
     
+    sid : 股票代碼 (含 .TW)
+    name : 股票名稱
+    df : 歷史價格資料 (需含 Close, High, Low, Volume)
+    cfg : 分析參數設定 (dict)
+    is_manual : 是否手動模式，手動模式會直接顯示所有結果
+    """
+    
+    # -------------------- 基本檢查 --------------------
+    required_cols = ["Close", "High", "Low", "Volume"]
+    if df.empty or not all(col in df.columns for col in required_cols) or len(df) < 60:
+        return None
+
     try:
+        # -------------------- 計算現價與均線 --------------------
         current_price = float(df['Close'].iloc[-1])
-        ma20_series = df['Close'].rolling(window=20).mean()
-        ma60_series = df['Close'].rolling(window=60).mean()
-        ma20_val = float(ma20_series.iloc[-1])
-        ma60_val = float(ma60_series.iloc[-1])
-        
+        ma20_val = float(df['Close'].rolling(window=20).mean().iloc[-1])
+        ma60_val = float(df['Close'].rolling(window=60).mean().iloc[-1])
+
         trend_label = '🔴 多頭排列' if ma20_val > ma60_val else '🟢 空頭排列'
-        
+
+        # -------------------- 三角 / 箱型訊號 --------------------
         lookback = cfg.get("p_lookback", 15)
         if len(df) < lookback:
             return None
-        
+
         x_arr = np.arange(lookback)
         high_prices = df["High"].iloc[-lookback:].values.flatten()
         low_prices  = df["Low"].iloc[-lookback:].values.flatten()
-        
+
         slope_high, intercept_high, _, _, _ = linregress(x_arr, high_prices)
         slope_low,  intercept_low,  _, _, _ = linregress(x_arr, low_prices)
-        
+
         signals_list = []
+        # 三角收斂：上升與下降趨勢互相收斂
         if slope_high < -0.001 and slope_low > 0.001:
             signals_list.append("📐三角收斂")
+        # 箱型整理：高低價趨勢平緩
         if abs(slope_high) < 0.03 and abs(slope_low) < 0.03:
             signals_list.append("📦箱型整理")
-        
+
+        # -------------------- 成交量訊號 --------------------
         if len(df) >= 6 and cfg.get("check_vol", True):
             vol_today = float(df["Volume"].iloc[-1])
-            vol_avg5  = float(df["Volume"].iloc[-6:-1].mean())
-            if vol_today > vol_avg5 * 1.5:
+            vol_prev5 = df["Volume"].iloc[-6:-1]
+            vol_avg5 = vol_prev5.mean() if not vol_prev5.empty else 0
+            if vol_avg5 > 0 and vol_today > vol_avg5 * 1.5:
                 signals_list.append("🚀今日爆量")
-        
+
+        # -------------------- 是否顯示 --------------------
         should_display = is_manual
         if not is_manual:
             has_valid_signal = any([
-                cfg.get("check_tri", False) and "📐" in "".join(signals_list),
-                cfg.get("check_box", False) and "📦" in "".join(signals_list),
-                cfg.get("check_vol", False) and "🚀" in "".join(signals_list)
+                cfg.get("check_tri", False) and any("📐" in s for s in signals_list),
+                cfg.get("check_box", False) and any("📦" in s for s in signals_list),
+                cfg.get("check_vol", False) and any("🚀" in s for s in signals_list)
             ])
             should_display = has_valid_signal
-            
+
+            # 均線濾掉低於 MA20 的股票
             if cfg.get("f_ma_filter", False) and current_price < ma20_val:
                 should_display = False
+            # 價格下限濾掉
             if current_price < cfg.get("min_price", 0):
                 should_display = False
-        
+
+        # -------------------- 組合返回字典 --------------------
         if should_display:
             return {
                 "收藏": sid in st.session_state.favorites,
@@ -315,10 +341,14 @@ def run_analysis(sid: str, name: str, df: pd.DataFrame, cfg: dict, is_manual: bo
                 "df": df.copy(),
                 "lines": (slope_high, intercept_high, slope_low, intercept_low, x_arr)
             }
+
     except Exception as exc:
-        # 單一股票失敗不影響整體
-        pass
+        # 單檔股票失敗不影響整體
+        st.warning(f"⚠️ 股票 {sid} 分析失敗: {exc}")
+        return None
+
     return None
+
 
 # ────────────────────────────────────────────────
 #               側邊欄控制面板
@@ -448,16 +478,28 @@ if st.session_state.last_cache_update:
 st.title(f"📈 {mode_selected}")
 st.caption(f"目前模式：{mode_selected} | 產業：{industry_filter} | 總標的：{len(full_db)} 檔")
 
+# ================= 股票清單與產業篩選 =================
 symbol_list = list(full_db.keys())
-if industry_filter != "全部":
-    symbol_list = [
-        s for s in symbol_list
-        if industry_filter in full_db.get(s, {}).get("category", "")
-    ]
 
-# ────────────────────────────────────────────────
-#               各模式邏輯
-# ────────────────────────────────────────────────
+if industry_filter != "全部":
+    filtered = []
+    for s in symbol_list:
+        value = full_db.get(s, {})
+        if isinstance(value, dict):
+            category_value = str(value.get("category", "")).strip()
+            if category_value == industry_filter:
+                filtered.append(s)
+    symbol_list = filtered
+
+    if not symbol_list:
+        st.warning(f"⚠️ 找不到產業為「{industry_filter}」的股票，請確認 JSON 是否包含 category 或名稱拼寫正確")
+        # 為了避免空列表，仍保留全部股票
+        symbol_list = list(full_db.keys())
+
+# ================= 各模式邏輯 =================
+display_results = []
+
+# -------- 手動查詢模式 --------
 if mode_selected == "🔍 手動查詢":
     manual_input = st.text_input(
         "請輸入股票代碼（多檔用逗號分隔）",
@@ -476,13 +518,16 @@ if mode_selected == "🔍 手動查詢":
                 if analysis_result:
                     results_temp.append(analysis_result)
         st.session_state.results_data = results_temp
+        display_results = results_temp
 
+# -------- 條件篩選模式 --------
 elif mode_selected == "⚖️ 條件篩選":
     st.info("請設定左側條件，然後點擊下方按鈕開始全市場掃描")
     if st.button("🚀 開始條件篩選", type="primary", use_container_width=True):
-        max_scan = analysis_cfg["scan_limit"]
+        max_scan = analysis_cfg.get("scan_limit", len(symbol_list))
         scan_symbols = symbol_list[:max_scan]
         temp_results = []
+
         with st.status(f"掃描中...（{len(scan_symbols)} 檔，{industry_filter}類）", expanded=True) as scan_status:
             progress_bar = st.progress(0)
             for idx, sym in enumerate(scan_symbols):
@@ -491,25 +536,22 @@ elif mode_selected == "⚖️ 條件篩選":
                 analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=False)
                 if analysis_result:
                     temp_results.append(analysis_result)
+
                 progress_bar.progress((idx + 1) / len(scan_symbols))
                 if (idx + 1) % 50 == 0:
                     time.sleep(0.05)
+
             st.session_state.results_data = temp_results
+            if not temp_results:
+                st.info("⚠️ 沒有符合條件的股票，請調整篩選條件")
             scan_status.update(
                 label=f"掃描完成！共找到 {len(temp_results)} 檔符合條件",
                 state="complete"
             )
+            display_results = temp_results
 
-# ────────────────────────────────────────────────
-#                 模式執行區塊
-# ────────────────────────────────────────────────
-# ────────────────────────────────────────────────
-# 預設 display_results，避免 NameError
-# ────────────────────────────────────────────────
-display_results = []
-
-# ================= 自動掃描模式 =================
-if mode_selected == "⚡ 自動掃描":
+# -------- 自動掃描模式 --------
+elif mode_selected == "⚡ 自動掃描":
     st_autorefresh(interval=60000, key="auto_scan_refresh")
     st.warning("自動掃描模式啟動，每 60 秒更新一次（限制前 150 檔避免過載）")
     
@@ -524,12 +566,13 @@ if mode_selected == "⚡ 自動掃描":
             analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=False)
             if analysis_result:
                 temp_results.append(analysis_result)
-    
-    # 更新結果資料
+
     st.session_state.results_data = temp_results
+    if not temp_results:
+        st.info("⚠️ 自動掃描沒有找到符合條件的股票")
     display_results = temp_results
 
-# ================= 收藏追蹤模式 =================
+# -------- 收藏追蹤模式 --------
 elif mode_selected == "❤️ 收藏追蹤":
     fav_syms = list(st.session_state.favorites)
     
@@ -691,5 +734,6 @@ else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 
 st.caption("祝交易順利！📈")
+
 
 
