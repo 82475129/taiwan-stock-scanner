@@ -700,8 +700,9 @@ for fav_sid in list(st.session_state.favorites):
 if display_results:
     table_records = []
     for item in display_results:
+        is_favorited = item["sid"] in st.session_state.favorites
         table_records.append({
-            "收藏": item["sid"] in st.session_state.favorites,
+            "收藏": is_favorited,
             "代碼": item["sid"],
             "名稱": item["名稱"],
             "現價": item["現價"],
@@ -716,20 +717,20 @@ if display_results:
     # 判斷是否為收藏追蹤模式
     is_favorite_mode = (mode_selected == "❤️ 收藏追蹤")
 
-    # 動態決定收藏欄位的行為
+    # 動態設定收藏欄位行為
     if is_favorite_mode:
-        # 收藏頁面：完全可編輯（可勾選、可取消）
+        # 收藏頁面：完全可編輯
         checkbox_config = st.column_config.CheckboxColumn(
             "❤️ 收藏",
             width="small",
             disabled=False
         )
     else:
-        # 其他頁面：已收藏的不能取消（disabled），未收藏的可以勾選
+        # 其他頁面：已收藏的禁用（無法取消），未收藏的可以勾選
         checkbox_config = st.column_config.CheckboxColumn(
             "❤️ 收藏",
             width="small",
-            disabled=False  # 表面上不禁用，但我們後面會處理
+            disabled=False  # 表面不禁用，但我們用後處理邏輯限制取消
         )
 
     column_config = {
@@ -748,22 +749,38 @@ if display_results:
         key=f"editor_{mode_selected}_{industry_filter or 'all'}"
     )
 
-    # 處理收藏變更
-    new_favorites = set(edited_table[edited_table["收藏"] == True]["代碼"].tolist())
+    # 從編輯後的表格取得使用者勾選的結果
+    new_checked = set(edited_table[edited_table["收藏"] == True]["代碼"].tolist())
 
-    if is_favorite_mode:
-        # 收藏頁面：允許新增與移除
-        if new_favorites != st.session_state.favorites:
-            st.session_state.favorites = new_favorites
-            st.success("收藏清單已更新！")
-            # 可選擇是否 rerun，建議先不加，避免不必要跳動
-            # st.rerun()
-    else:
-        # 其他頁面：只允許新增，不允許移除
-        added_favorites = new_favorites - st.session_state.favorites
-        if added_favorites:
-            st.session_state.favorites.update(added_favorites)
-            st.success(f"已新增 {len(added_favorites)} 檔到收藏清單")
+    # ────────────── 按鈕與提示 ──────────────
+    col1, col2 = st.columns([1, 4])
+
+    with col1:
+        if st.button("💾 儲存收藏變更", type="primary", use_container_width=True, key="save_fav_btn"):
+            current_favs = st.session_state.favorites.copy()
+
+            if is_favorite_mode:
+                # 收藏頁面：允許完整更新（新增 + 移除）
+                if new_checked != current_favs:
+                    st.session_state.favorites = new_checked
+                    st.success(f"收藏清單已更新！目前總共 {len(new_checked)} 檔")
+                    st.rerun()  # 收藏頁面 rerun 比較安全，因為本來就顯示所有收藏
+            else:
+                # 其他頁面：只允許新增，不允許移除
+                to_add = new_checked - current_favs
+                if to_add:
+                    st.session_state.favorites.update(to_add)
+                    st.success(f"已新增 {len(to_add)} 檔到收藏清單")
+                    st.rerun()  # 儲存後 rerun，讓表格顯示更新後的勾選狀態
+                else:
+                    st.info("沒有新的收藏要加入")
+
+    with col2:
+        pending_add_count = len(new_checked - st.session_state.favorites)
+        if pending_add_count > 0 and not is_favorite_mode:
+            st.caption(f"待新增收藏：{pending_add_count} 檔（按上方按鈕儲存）")
+        elif pending_add_count == 0 and not is_favorite_mode:
+            st.caption("目前無變更")
 
     st.divider()
     st.subheader("個股 K 線與趨勢線詳圖")
@@ -829,7 +846,9 @@ else:
     else:
         st.caption("目前無符合條件標的，或尚未執行分析")
 
-# 頁尾資訊（保持不變）
+# ────────────────────────────────────────────────
+# 頁尾資訊
+# ────────────────────────────────────────────────
 st.markdown("---")
 st.caption(
     "台股 Pro 旗艦戰情室 | "
