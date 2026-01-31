@@ -1,6 +1,6 @@
 # -*- coding: utf-8 -*-
 """
-黨名：update_db.py
+檔名：update_db.py
 功能：自動掃描證交所與櫃買中心，獲取「上市+上櫃」完整清單並包含「產業分類」
 """
 import requests
