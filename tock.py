@@ -535,19 +535,33 @@ if mode_selected == "🔍 手動查詢":
         placeholder="例：2330, 2454, 2603, 1216",
         key="manual_input_box"
     )
+    
     if manual_input:
         code_list = [c.strip().upper() for c in manual_input.replace("，", ",").split(",") if c.strip()]
-        results_temp = []
-        with st.spinner("正在分析手動輸入的標的..."):
-            for code in code_list:
-                sym = code if '.' in code else f"{code}.TW"
-                df_data = fetch_price(sym)
-                stock_name = full_db.get(sym, {}).get("name", code)
-                analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=True)
-                if analysis_result:
-                    results_temp.append(analysis_result)
-        st.session_state.results_data = results_temp
-        display_results = results_temp
+        if code_list:  # 避免空輸入重複跑
+            results_temp = []
+            with st.spinner("正在分析手動輸入的標的..."):
+                for code in code_list:
+                    sym = code if '.' in code else f"{code}.TW"
+                    if sym not in full_db:
+                        st.warning(f"找不到股票 {sym}，已跳過")
+                        continue
+                    df_data = fetch_price(sym)
+                    stock_name = full_db.get(sym, {}).get("name", code)
+                    analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=True)
+                    if analysis_result:
+                        results_temp.append(analysis_result)
+            
+            # 只在有新輸入或結果改變時才更新
+            if results_temp != st.session_state.get('last_manual_results', []):
+                st.session_state.results_data = results_temp
+                st.session_state.last_manual_results = results_temp  # 額外暫存，避免重複計算
+            display_results = st.session_state.results_data
+    else:
+        # 沒有輸入時，清空結果（可選）
+        display_results = []
+        if 'results_data' in st.session_state:
+            del st.session_state.results_data
 
 # -------- 條件篩選模式 --------
 elif mode_selected == "⚖️ 條件篩選":
@@ -876,4 +890,5 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
+
 
