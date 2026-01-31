@@ -104,8 +104,10 @@ def update_stock_json_from_finmind():
         response.raise_for_status()
         result = response.json()
 
-        if result.get("status") != "success":
-            raise ValueError(f"FinMind API 回應錯誤：{result.get('msg')}")
+        # ✅ 只要有 data 就當成功（FinMind 正確用法）
+        if "data" not in result:
+            raise ValueError(f"FinMind API 回應異常：{result}")
+
 
         data = result["data"]
         stock_dict = {}
@@ -501,19 +503,24 @@ st.caption(f"目前模式：{mode_selected} | 產業：{industry_filter} | 總�
 
 # 過濾符合產業的代碼清單（防呆版）
 symbol_list = list(full_db.keys())
-if industry_filter != "全部":
+
+# ✅ 檢查 JSON 裡到底有沒有 category
+has_category = any(
+    isinstance(v, dict) and "category" in v
+    for v in full_db.values()
+)
+
+# ✅ 只有「真的有 category」才做產業篩選
+if industry_filter != "全部" and has_category:
     filtered = []
     for s in symbol_list:
         value = full_db.get(s)
-        category_value = None
+
         if isinstance(value, dict):
-            category_value = value.get("category")
-        elif isinstance(value, str):
-            category_value = "未知"
-        elif isinstance(value, (list, tuple)):
-            category_value = value[1] if len(value) > 1 else "未知"
+            category_value = value.get("category", "")
         else:
-            category_value = "未知"
+            category_value = ""
+
         if industry_filter in str(category_value):
             filtered.append(s)
 
@@ -714,4 +721,5 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
+
 
