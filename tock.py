@@ -590,9 +590,10 @@ elif mode_selected == "❤️ 收藏追蹤":
                     stock_name = full_db.get(sym, {}).get("name", sym)
                     analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=True)
                     if analysis_result:
-                        temp_results.append(analysis_result)
-                # ✅ 累加模式
-                st.session_state.results_data += temp_results
+                        # ✅ 累加模式，避免重複
+                        if not any(x["sid"] == sym for x in st.session_state.results_data):
+                            st.session_state.results_data.append(analysis_result)
+                            temp_results.append(analysis_result)
             st.success(f"更新完成，共新增 {len(temp_results)} 檔")
         
         # 生成 display_results（收藏股模式，強制顯示所有收藏股）
@@ -747,10 +748,3 @@ else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 
 st.caption("祝交易順利！📈")
-
-
-
-
-
-
-
