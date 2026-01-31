@@ -88,95 +88,45 @@ PRICE_CACHE_PATH = Path("taiwan_stock_prices.pkl")
 # 新增：從 FinMind API 更新股票清單 JSON
 # ================================
 def update_stock_json_from_finmind():
-    """
-    使用 FinMind 免費 API 抓取最新 TaiwanStockInfo
-    產生格式：{ "2330.TW": {"name": "台積電", "category": "半導體"} }
-    """
-    st.info("正在從 FinMind 抓取最新台股清單（約 1800 檔）...")
-    try:
-        url = "https://api.finmindtrade.com/api/v4/data"
-        params = {
-            "dataset": "TaiwanStockInfo",
-            "apikey": ""  # 強烈建議註冊免費 apikey：https://finmind.github.io/
-                          # 留空也可執行，但有 rate limit
-        }
-        response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()
-        result = response.json()
+    import requests, json, os
 
-        # ✅ 只要有 data 就當成功（FinMind 正確用法）
-        if "data" not in result:
-            raise ValueError(f"FinMind API 回應異常：{result}")
+    url = "https://api.finmindtrade.com/api/v4/data"
+    params = {
+        "dataset": "TaiwanStockInfo"
+    }
+
+    r = requests.get(url, params=params, timeout=20)
+    result = r.json()
+
+    if "data" not in result:
+        raise ValueError(f"FinMind API 回傳異常：{result}")
+
+    data = result["data"]
+
+    # ✅ 組成「代碼 → 詳細資訊」的新結構
+    stock_dict = {}
+    for row in data:
+        stock_id = row.get("stock_id")
+        if not stock_id:
+            continue
+
+        stock_dict[f"{stock_id}.TW"] = {
+        "name": row.get("stock_name", ""),
+        "category": row.get("industry_category", ""),  # ✅ 關鍵
+        "type": row.get("type", "")
+    }
 
 
-        data = result["data"]
-        stock_dict = {}
+    # ✅ 關鍵：寫入你現在正在用的那個檔案
+    json_path = "taiwan_full_market.json"
 
-        for row in data:
-            # 只取上市 (twse) / 上櫃 (tpex) 普通股
-            if row.get("type") in ["twse", "tpex"]:
-                code = row["stock_id"]
-                symbol = f"{code}.TW" if row["type"] == "twse" else f"{code}.TWO"
-                name = row["stock_name"].strip()
-                category_raw = row.get("industry_category", "其他").strip()
+    with open(json_path, "w", encoding="utf-8") as f:
+        json.dump(stock_dict, f, ensure_ascii=False, indent=2)
 
-                # 自訂分類簡化（讓篩選更方便，可依需求調整）
-                category = "其他"
-                if any(kw in category_raw for kw in ["半導體", "IC", "晶圓", "封測"]):
-                    category = "半導體"
-                elif "光電" in category_raw:
-                    category = "光電"
-                elif "電子零組件" in category_raw or "被動元件" in category_raw:
-                    category = "電子零組件"
-                elif "電腦" in category_raw or "週邊設備" in category_raw:
-                    category = "電腦週邊"
-                elif "通訊" in category_raw or "網路" in category_raw:
-                    category = "通訊網路"
-                elif "塑膠" in category_raw:
-                    category = "塑膠"
-                elif "紡織" in category_raw:
-                    category = "紡織"
-                elif "鋼鐵" in category_raw:
-                    category = "鋼鐵"
-                elif "食品" in category_raw:
-                    category = "食品"
-                elif "金融" in category_raw or "銀行" in category_raw or "保險" in category_raw:
-                    category = "金融業"
-                elif "航運" in category_raw or "貨櫃" in category_raw:
-                    category = "航運"
-                elif "生技" in category_raw or "醫療" in category_raw or "製藥" in category_raw:
-                    category = "生技醫療"
-                elif "水泥" in category_raw:
-                    category = "水泥"
-                elif "玻璃" in category_raw or "陶瓷" in category_raw:
-                    category = "玻璃陶瓷"
-                else:
-                    category = category_raw  # 保留原始分類
+    print(f"✅ 已更新 {len(stock_dict)} 筆股票 → {json_path}")
+    return stock_dict, len(stock_dict)
 
-                stock_dict[symbol] = {
-                    "name": name,
-                    "category": category
-                }
 
-        if len(stock_dict) < 1000:
-            raise ValueError(f"抓到的股票數太少：{len(stock_dict)} 檔，請檢查網路或 apikey")
-
-        # 儲存 JSON
-        with open(STOCK_JSON_PATH, 'w', encoding='utf-8') as f:
-            json.dump(stock_dict, f, ensure_ascii=False, indent=2)
-
-        st.success(f"股票清單更新完成！共 {len(stock_dict)} 檔")
-        return stock_dict, len(stock_dict)
-
-    except Exception as e:
-        st.error(f"FinMind 更新失敗：{str(e)}")
-        traceback.print_exc(file=sys.stderr)
-        return None, 0
-
-# ================================
-# 載入股票基本資料（從本地 JSON）
-# ================================
-@st.cache_data(ttl=86400 * 1, show_spinner="載入股票清單（本地 JSON）...")
 def load_stock_database():
     """
     從專案中的 taiwan_full_market.json 載入股票清單
@@ -721,5 +671,6 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
+
 
 
