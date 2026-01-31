@@ -39,6 +39,7 @@ import os
 import sys
 import traceback
 import requests  # 新增：用於 FinMind API 更新股票清單
+from bs4 import BeautifulSoup
 
 # ================================
 # 忽略常見警告，讓介面更乾淨
@@ -235,6 +236,40 @@ def fetch_price(symbol: str) -> pd.DataFrame:
     except Exception as e:
         st.warning(f"下載 {symbol} 失敗：{str(e)}")
         return pd.DataFrame()
+
+
+def fetch_stock_news(symbol_code):
+    clean_code = symbol_code.split('.')[0]
+    url = f"https://tw.stock.yahoo.com/quote/{clean_code}/news"
+    
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
+        resp = requests.get(url, headers=headers, timeout=10)
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        
+        news_items = []
+        # Yahoo 股市新聞標題通常包裹在 h3 內，且連結包含 /news/
+        # 使用 select 找尋所有包含 news 字眼的連結
+        links = soup.select('a[href*="/news/"]')
+        
+        seen_titles = set()
+        for link in links:
+            title = link.get_text().strip()
+            href = link.get('href')
+            
+            # 過濾掉重複標題或空內容
+            if title and href and title not in seen_titles:
+                # 處理相對路徑
+                full_href = href if href.startswith('http') else f"https://tw.stock.yahoo.com{href}"
+                news_items.append({"title": title, "link": full_href})
+                seen_titles.add(title)
+            
+            if len(news_items) >= 5: break # 滿 5 則就停
+            
+        return news_items
+    except Exception as e:
+        return [] # 失敗回傳空清單，避免 UI 崩潰
+
 
 # ================================
 # 核心技術分析函式
@@ -563,6 +598,9 @@ display_results = st.session_state.results_data
 if mode_selected == "❤️ 收藏追蹤":
     display_results = [item for item in display_results if item["sid"] in st.session_state.favorites]
 
+# ================================
+# 結果呈現區塊 (整合 BeautifulSoup 新聞)
+# ================================
 if display_results:
     # --- A. 表格顯示區 ---
     table_records = []
@@ -602,64 +640,59 @@ if display_results:
 
     st.divider()
 
-    # --- B. K線圖詳情區 ---
-    st.subheader("個股 K 線與趨勢線詳圖")
+    # --- B. K線圖與新聞詳情區 ---
+    st.subheader("📊 個股深度戰情 (K線 + 趨勢 + 即時新聞)")
     for item in display_results:
-        # ⚠️ 注意這裡：with 必須縮排在 for 裡面
         with st.expander(
             f"{item['sid']} {item['名稱']} | {item['符合訊號']} | {item['趨勢']}",
-            expanded=False
+            expanded=(len(display_results) == 1) # 若只有一檔則自動展開
         ):
-            # 1. 顯示數據指標
-            cols = st.columns(3)
-            cols[0].metric("現價", f"{item['現價']:.2f} 元")
-            cols[1].metric("MA20", f"{item['MA20']:.2f}")
-            cols[2].metric("趨勢", item["趨勢"])
-            
-            # 2. 準備繪圖數據
-            plot_df = item["df"].iloc[-60:].copy()
-            fig = go.Figure()
-            
-            fig.add_trace(go.Candlestick(
-                x=plot_df.index,
-                open=plot_df['Open'],
-                high=plot_df['High'],
-                low=plot_df['Low'],
-                close=plot_df['Close'],
-                name="K 線",
-                increasing_line_color="#ef5350",
-                decreasing_line_color="#26a69a"
-            ))
-            
-            # 3. 趨勢線邏輯
-            sh, ih, sl, il, x_vals = item["lines"]
-            x_dates = plot_df.index[-len(x_vals):]
-            
-            fig.add_trace(go.Scatter(
-                x=x_dates, y=sh * x_vals + ih,
-                mode='lines', line=dict(color='red', dash='dash', width=2), name='壓力線'
-            ))
-            
-            fig.add_trace(go.Scatter(
-                x=x_dates, y=sl * x_vals + il,
-                mode='lines', line=dict(color='lime', dash='dash', width=2), name='支撐線'
-            ))
-            
-            # 4. 安全主題判斷
-            try:
-                theme_setting = st.get_option("theme.base")
-                chart_template = "plotly_dark" if theme_setting == "dark" else "plotly_white"
-            except:
-                chart_template = "plotly_white"
-                
-            fig.update_layout(
-                height=480,
-                margin=dict(l=10, r=10, t=30, b=10),
-                xaxis_rangeslider_visible=False,
-                template=chart_template
-            )
+            # 1. 建立左右佈局：左邊圖表，右邊新聞
+            col_chart, col_news = st.columns([2, 1])
 
-            st.plotly_chart(fig, use_container_width=True, key=f"chart_{item['sid']}")
+            with col_chart:
+                # 數據指標
+                m_col1, m_col2, m_col3 = st.columns(3)
+                m_col1.metric("現價", f"{item['現價']:.2f}")
+                m_col2.metric("MA20", f"{item['MA20']:.2f}")
+                m_col3.metric("狀態", item["符合訊號"].split(",")[0] if "," in item["符合訊號"] else item["符合訊號"])
+
+                # 準備 K 線圖
+                plot_df = item["df"].iloc[-60:].copy()
+                fig = go.Figure()
+                fig.add_trace(go.Candlestick(
+                    x=plot_df.index, open=plot_df['Open'], high=plot_df['High'],
+                    low=plot_df['Low'], close=plot_df['Close'], name="K 線",
+                    increasing_line_color="#ef5350", decreasing_line_color="#26a69a"
+                ))
+                
+                # 繪製趨勢線
+                sh, ih, sl, il, x_vals = item["lines"]
+                x_dates = plot_df.index[-len(x_vals):]
+                fig.add_trace(go.Scatter(x=x_dates, y=sh * x_vals + ih, mode='lines', 
+                                         line=dict(color='red', dash='dash'), name='壓力'))
+                fig.add_trace(go.Scatter(x=x_dates, y=sl * x_vals + il, mode='lines', 
+                                         line=dict(color='lime', dash='dash'), name='支撐'))
+                
+                fig.update_layout(height=400, margin=dict(l=5, r=5, t=5, b=5), 
+                                  xaxis_rangeslider_visible=False, template="plotly_dark")
+                st.plotly_chart(fig, use_container_width=True, key=f"chart_{item['sid']}")
+
+            with col_news:
+                st.write("✨ **即時題材 (BeautifulSoup)**")
+                # 呼叫美麗湯爬蟲
+                stock_news = fetch_stock_news_bs4(item['sid'])
+                if stock_news:
+                    for n in stock_news:
+                        st.caption(f"📅 {datetime.now().strftime('%m/%d')}")
+                        st.markdown(f"[{n['title']}]({n['link']})")
+                        st.write("---")
+                else:
+                    st.write("查無即時新聞內容")
+                
+                st.button(f"查看更多 {item['名稱']} 籌碼", key=f"chip_{item['sid']}", 
+                          on_click=lambda url=item['Yahoo']: st.write(f"請至 Yahoo 詳閱: {url}"))
+
 else:
     # --- C. 無結果提示區 ---
     if mode_selected == "⚖️ 條件篩選":
@@ -684,4 +717,5 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
+
 
