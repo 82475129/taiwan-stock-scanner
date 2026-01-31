@@ -500,12 +500,17 @@ elif mode_selected == "⚖️ 條件篩選":
                 state="complete"
             )
 
-elif mode_selected == "⚡ 自動掃描":
+# ────────────────────────────────────────────────
+#                 模式執行區塊
+# ────────────────────────────────────────────────
+if mode_selected == "⚡ 自動掃描":
     st_autorefresh(interval=60000, key="auto_scan_refresh")
     st.warning("自動掃描模式啟動，每 60 秒更新一次（限制前 150 檔避免過載）")
+    
     auto_scan_limit = min(len(symbol_list), 150)
     scan_symbols = symbol_list[:auto_scan_limit]
     temp_results = []
+    
     with st.spinner(f"自動掃描 {len(scan_symbols)} 檔中..."):
         for sym in scan_symbols:
             df_data = fetch_price(sym)
@@ -513,38 +518,56 @@ elif mode_selected == "⚡ 自動掃描":
             analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=False)
             if analysis_result:
                 temp_results.append(analysis_result)
+    
+    # 只更新 results_data，不動收藏列表
     st.session_state.results_data = temp_results
 
+
 elif mode_selected == "❤️ 收藏追蹤":
-    fav_count = len(st.session_state.favorites)
-    if fav_count == 0:
+    fav_syms = list(st.session_state.favorites)
+    
+    if not fav_syms:
         st.info("目前沒有收藏股票。從其他模式點擊 ❤️ 加入收藏吧！")
+        display_results = []
     else:
-        st.subheader(f"收藏清單（{fav_count} 檔）")
+        st.subheader(f"收藏清單（{len(fav_syms)} 檔）")
+        
+        # 點擊按鈕才更新收藏股報價
         if st.button("🔄 立即更新收藏報價", type="primary"):
-            temp_results = []
             with st.status("更新收藏股中..."):
-                for sym in list(st.session_state.favorites):
+                temp_results = []
+                for sym in fav_syms:
                     df_data = fetch_price(sym)
                     stock_name = full_db.get(sym, {}).get("name", sym)
                     analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=True)
                     if analysis_result:
                         temp_results.append(analysis_result)
-            st.session_state.results_data = temp_results
+                st.session_state.results_data = temp_results
             st.success(f"更新完成，共 {len(temp_results)} 檔")
+        
+        # 收藏模式永遠生成 display_results
+        display_results = []
+        for sym in fav_syms:
+            # 先找 results_data 裡有沒有已抓的資料
+            cached = next((x for x in st.session_state.results_data if x["sid"] == sym), None)
+            if cached:
+                display_results.append(cached)
+            else:
+                df_data = fetch_price(sym)
+                stock_name = full_db.get(sym, {}).get("name", sym)
+                analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=True)
+                if analysis_result:
+                    display_results.append(analysis_result)
+
 
 # ────────────────────────────────────────────────
-#               結果呈現區塊
+#                 結果呈現區塊
 # ────────────────────────────────────────────────
-display_results = st.session_state.results_data
-if mode_selected == "❤️ 收藏追蹤":
-    display_results = [item for item in display_results if item["sid"] in st.session_state.favorites]
-
 if display_results:
     table_records = []
     for item in display_results:
         table_records.append({
-            "收藏": item["收藏"],
+            "收藏": item["sid"] in st.session_state.favorites,
             "代碼": item["sid"],
             "名稱": item["名稱"],
             "現價": item["現價"],
@@ -571,6 +594,7 @@ if display_results:
         key=f"editor_{mode_selected}_{industry_filter}"
     )
     
+    # 更新收藏列表
     new_favorites = set(edited_table[edited_table["收藏"] == True]["代碼"].tolist())
     if new_favorites != st.session_state.favorites:
         st.session_state.favorites = new_favorites
@@ -655,3 +679,4 @@ else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 
 st.caption("祝交易順利！📈")
+
