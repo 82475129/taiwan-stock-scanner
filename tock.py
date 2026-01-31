@@ -1,19 +1,19 @@
 # -*- coding: utf-8 -*-
 """
 台股 Pro 旗艦戰情室 - 完整本地版（Streamlit UI）
-專案目標：提供台股全市場快速掃描、技術分析、可視化工具
-核心特色：
-  • 本地快取價格資料（yfinance + pickle）
+專案目標：提供台股全市場快速篩選、技術分析、可視化工具
+主要特色：
   • FinMind API 自動更新股票清單與產業分類
-  • 四種使用模式：手動 / 條件篩選 / 自動掃描 / 收藏追蹤
-  • 支援三角收斂、箱型整理、爆量、MA排列等訊號
-  • Plotly K線 + 壓力/支撐趨勢線
-  • 即時收藏同步（data_editor checkbox）
+  • yfinance 價格資料 + 本地 pickle 快取（避免 rate limit）
+  • 四種模式：手動查詢、條件篩選、自動掃描、收藏追蹤
+  • 技術訊號：三角收斂、箱型整理、爆量、MA排列
+  • Plotly K線圖 + 壓力/支撐趨勢線
+  • data_editor 即時勾選收藏（跨模式同步）
   • 批次更新進度條、錯誤處理、使用者提示
-使用前建議：
+使用建議流程：
 1. 第一次執行 → 側邊欄「更新股票清單 JSON (FinMind)」
-2. 再執行「更新全市場價格快取」（約 15–40 分鐘，視網路而定）
-3. 之後日常使用皆從本地快取讀取，速度極快
+2. 再執行「更新全市場價格快取」（約15–40分鐘）
+3. 之後日常使用都從本地快取讀取，速度極快
 注意事項：
 • 所有資料僅供個人學習與參考
 • 非投資建議，交易風險自負
@@ -38,7 +38,7 @@ import traceback
 import sys
 import os
 
-# 忽略部分常見警告，讓畫面更乾淨
+# 忽略常見警告，讓介面更乾淨
 warnings.filterwarnings("ignore", category=FutureWarning)
 warnings.filterwarnings("ignore", category=pd.errors.SettingWithCopyWarning)
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -86,10 +86,10 @@ STOCK_JSON_PATH = Path("taiwan_full_market.json")
 PRICE_CACHE_PATH = Path("taiwan_stock_prices.pkl")
 
 # ────────────────────────────────────────────────
-#          FinMind API 更新股票清單
+#          FinMind API 更新股票清單（強制覆蓋）
 # ────────────────────────────────────────────────
 def update_stock_json_from_finmind():
-    """從 FinMind 抓取最新台股清單並儲存為 JSON"""
+    """從 FinMind 抓取最新台股清單並強制覆蓋本地 JSON"""
     url = "https://api.finmindtrade.com/api/v4/data"
     params = {"dataset": "TaiwanStockInfo"}
     try:
@@ -97,81 +97,102 @@ def update_stock_json_from_finmind():
         r.raise_for_status()
         result = r.json()
         if not result.get("success", True):
-            st.error(f"FinMind API 回應失敗：{result.get('msg', '未知錯誤')}")
+            st.error(f"FinMind API 失敗：{result.get('msg', '未知錯誤')}")
             return None, 0
         data = result.get("data", [])
         if not data:
             st.warning("FinMind 回傳資料為空")
             return None, 0
+        
         stock_dict = {}
         for row in data:
             sid = row.get("stock_id")
             if sid and sid.isdigit():
+                name = row.get("stock_name", sid)
+                category = row.get("industry_category", "未知")
                 stock_dict[f"{sid}.TW"] = {
-                    "name": row.get("stock_name", "").strip(),
-                    "category": row.get("industry_category", "未知").strip(),
-                    "type": row.get("type", "").strip()
+                    "name": str(name).strip(),
+                    "category": str(category).strip()
                 }
-        if not stock_dict:
-            st.warning("沒有有效股票資料")
-            return None, 0
+        
+        # 強制覆蓋寫入
         with open(STOCK_JSON_PATH, "w", encoding="utf-8") as f:
             json.dump(stock_dict, f, ensure_ascii=False, indent=2)
-        st.success(f"成功更新 {len(stock_dict)} 檔股票清單 → {STOCK_JSON_PATH}")
+        
+        st.success(f"成功覆蓋更新 {len(stock_dict)} 檔股票清單 → {STOCK_JSON_PATH}")
         return stock_dict, len(stock_dict)
+    
     except requests.exceptions.RequestException as re:
         st.error(f"網路請求失敗：{str(re)}")
         return None, 0
     except Exception as e:
-        st.error(f"更新股票清單時發生異常：{str(e)}")
+        st.error(f"更新股票清單異常：{str(e)}")
         traceback.print_exc(file=sys.stderr)
         return None, 0
 
 # ────────────────────────────────────────────────
-#          載入股票資料庫（含 fallback）
+#          載入股票資料庫（超強防呆版）
 # ────────────────────────────────────────────────
 def load_stock_database():
-    """載入 taiwan_full_market.json，支援多種格式並標準化"""
+    """載入 taiwan_full_market.json，處理各種異常格式"""
     if STOCK_JSON_PATH.exists():
         try:
             with open(STOCK_JSON_PATH, 'r', encoding='utf-8') as f:
                 raw = json.load(f)
+            
             db = {}
+            abnormal_count = 0
             for symbol, val in raw.items():
+                name = symbol
+                category = "未知"
+                
                 if isinstance(val, dict):
                     name = val.get("name", symbol)
-                    cat = val.get("category", "未知")
+                    category = val.get("category", "未知")
                 elif isinstance(val, str):
                     name = val
-                    cat = "未知"
                 else:
-                    name = str(val)
-                    cat = "未知"
-                db[symbol] = {"name": name.strip(), "category": cat.strip()}
-            if len(db) >= 20:
-                st.info(f"股票清單載入成功：{len(db)} 檔")
+                    # 處理 float/int/None/list 等異常情況
+                    name = str(val) if val is not None else symbol
+                    abnormal_count += 1
+                
+                # 只對字串做 strip
+                name = name.strip() if isinstance(name, str) else str(name)
+                category = category.strip() if isinstance(category, str) else str(category)
+                
+                db[symbol] = {"name": name, "category": category}
+            
+            if abnormal_count > 0:
+                st.warning(f"發現 {abnormal_count} 筆非標準格式資料，已轉為字串處理")
+            
+            if len(db) >= 50:
+                st.info(f"股票清單載入完成：{len(db)} 檔")
                 return db
             else:
                 st.warning(f"JSON 資料量過少 ({len(db)})，使用 fallback")
         except json.JSONDecodeError:
-            st.error("JSON 格式錯誤")
+            st.error("JSON 格式錯誤，請刪除檔案後重新更新")
         except Exception as e:
             st.error(f"讀取 JSON 失敗：{str(e)}")
+            traceback.print_exc(file=sys.stderr)
+    
     # fallback 小資料
+    st.warning("使用內建 fallback 股票清單（少量範例）")
     fallback_db = {
-        "2330.TW": {"name": "台積電", "category": "半導體"},
-        "2454.TW": {"name": "聯發科", "category": "半導體"},
-        "2317.TW": {"name": "鴻海", "category": "電子"},
-        "2603.TW": {"name": "長榮", "category": "航運"},
-        "2615.TW": {"name": "萬海", "category": "航運"},
-        "1216.TW": {"name": "統一", "category": "食品"},
-        "1101.TW": {"name": "台泥", "category": "水泥"},
-        "2303.TW": {"name": "聯電", "category": "半導體"},
-        "3034.TW": {"name": "聯詠", "category": "半導體"},
-        "3443.TW": {"name": "創意", "category": "半導體"},
+        "2330.TW": {"name": "台積電",     "category": "半導體"},
+        "2454.TW": {"name": "聯發科",     "category": "半導體"},
+        "2317.TW": {"name": "鴻海",       "category": "電子"},
+        "2603.TW": {"name": "長榮",       "category": "航運"},
+        "2615.TW": {"name": "萬海",       "category": "航運"},
+        "1216.TW": {"name": "統一",       "category": "食品"},
+        "1101.TW": {"name": "台泥",       "category": "水泥"},
+        "2303.TW": {"name": "聯電",       "category": "半導體"},
+        "3034.TW": {"name": "聯詠",       "category": "半導體"},
+        "3443.TW": {"name": "創意",       "category": "半導體"},
     }
     return fallback_db
 
+# 載入資料庫（只執行一次）
 if st.session_state.full_db is None:
     st.session_state.full_db = load_stock_database()
 full_db = st.session_state.full_db
@@ -206,6 +227,7 @@ def fetch_price(symbol: str) -> pd.DataFrame:
         df = price_cache[symbol]
         if isinstance(df, pd.DataFrame) and not df.empty:
             return df.copy()
+    
     try:
         df = yf.download(
             symbol,
@@ -223,65 +245,78 @@ def fetch_price(symbol: str) -> pd.DataFrame:
             st.session_state.last_cache_update = datetime.now()
         return df
     except Exception as e:
-        st.warning(f"無法下載 {symbol}：{str(e)}")
+        st.warning(f"下載 {symbol} 失敗：{str(e)}")
         return pd.DataFrame()
 
 # ────────────────────────────────────────────────
-#               核心技術分析邏輯
+#               核心技術分析函式
 # ────────────────────────────────────────────────
 def run_analysis(sid: str, name: str, df: pd.DataFrame, cfg: dict, is_manual: bool = False) -> dict | None:
     if df.empty or 'Close' not in df.columns or len(df) < 60:
         return None
+    
     try:
         current_price = float(df['Close'].iloc[-1])
-        ma20 = float(df['Close'].rolling(20).mean().iloc[-1])
-        ma60 = float(df['Close'].rolling(60).mean().iloc[-1])
-        trend = '🔴 多頭排列' if ma20 > ma60 else '🟢 空頭排列'
-        lb = cfg.get("p_lookback", 15)
-        if len(df) < lb:
+        ma20_series = df['Close'].rolling(window=20).mean()
+        ma60_series = df['Close'].rolling(window=60).mean()
+        ma20_val = float(ma20_series.iloc[-1])
+        ma60_val = float(ma60_series.iloc[-1])
+        
+        trend_label = '🔴 多頭排列' if ma20_val > ma60_val else '🟢 空頭排列'
+        
+        lookback = cfg.get("p_lookback", 15)
+        if len(df) < lookback:
             return None
-        x = np.arange(lb)
-        highs = df["High"].iloc[-lb:].values.flatten()
-        lows  = df["Low"].iloc[-lb:].values.flatten()
-        slope_h, int_h, _, _, _ = linregress(x, highs)
-        slope_l, int_l, _, _, _ = linregress(x, lows)
-        signals = []
-        if slope_h < -0.001 and slope_l > 0.001:
-            signals.append("📐三角收斂")
-        if abs(slope_h) < 0.03 and abs(slope_l) < 0.03:
-            signals.append("📦箱型整理")
+        
+        x_arr = np.arange(lookback)
+        high_prices = df["High"].iloc[-lookback:].values.flatten()
+        low_prices  = df["Low"].iloc[-lookback:].values.flatten()
+        
+        slope_high, intercept_high, _, _, _ = linregress(x_arr, high_prices)
+        slope_low,  intercept_low,  _, _, _ = linregress(x_arr, low_prices)
+        
+        signals_list = []
+        if slope_high < -0.001 and slope_low > 0.001:
+            signals_list.append("📐三角收斂")
+        if abs(slope_high) < 0.03 and abs(slope_low) < 0.03:
+            signals_list.append("📦箱型整理")
+        
         if len(df) >= 6 and cfg.get("check_vol", True):
             vol_today = float(df["Volume"].iloc[-1])
-            vol_avg5 = float(df["Volume"].iloc[-6:-1].mean())
+            vol_avg5  = float(df["Volume"].iloc[-6:-1].mean())
             if vol_today > vol_avg5 * 1.5:
-                signals.append("🚀今日爆量")
-        show = is_manual
+                signals_list.append("🚀今日爆量")
+        
+        should_display = is_manual
         if not is_manual:
-            show = any([
-                cfg["check_tri"] and "📐" in "".join(signals),
-                cfg["check_box"] and "📦" in "".join(signals),
-                cfg["check_vol"] and "🚀" in "".join(signals)
+            has_valid_signal = any([
+                cfg.get("check_tri", False) and "📐" in "".join(signals_list),
+                cfg.get("check_box", False) and "📦" in "".join(signals_list),
+                cfg.get("check_vol", False) and "🚀" in "".join(signals_list)
             ])
-            if cfg["f_ma_filter"] and current_price < ma20:
-                show = False
-            if current_price < cfg["min_price"]:
-                show = False
-        if show:
+            should_display = has_valid_signal
+            
+            if cfg.get("f_ma_filter", False) and current_price < ma20_val:
+                should_display = False
+            if current_price < cfg.get("min_price", 0):
+                should_display = False
+        
+        if should_display:
             return {
                 "收藏": sid in st.session_state.favorites,
                 "sid": sid,
                 "名稱": name,
                 "現價": round(current_price, 2),
-                "趨勢": trend,
-                "MA20": round(ma20, 2),
-                "MA60": round(ma60, 2),
-                "符合訊號": ", ".join(signals) if signals else "🔍 觀察中",
+                "趨勢": trend_label,
+                "MA20": round(ma20_val, 2),
+                "MA60": round(ma60_val, 2),
+                "符合訊號": ", ".join(signals_list) if signals_list else "🔍 觀察中",
                 "Yahoo": f"https://tw.stock.yahoo.com/quote/{sid.split('.')[0]}",
                 "df": df.copy(),
-                "lines": (slope_h, int_h, slope_l, int_l, x)
+                "lines": (slope_high, intercept_high, slope_low, intercept_low, x_arr)
             }
-    except Exception:
-        # 單一股票出錯不影響整體
+    except Exception as exc:
+        # 單一股票失敗不影響整體
         pass
     return None
 
@@ -289,20 +324,20 @@ def run_analysis(sid: str, name: str, df: pd.DataFrame, cfg: dict, is_manual: bo
 #               側邊欄控制面板
 # ────────────────────────────────────────────────
 st.sidebar.title("🛡️ 台股 Pro 戰術控制台")
-st.sidebar.markdown(f"**目前股票數量**：{len(full_db)} 檔")
+st.sidebar.markdown(f"**股票清單**：{len(full_db)} 檔")
 
-mode = st.sidebar.radio(
-    "選擇分析模式",
+mode_selected = st.sidebar.radio(
+    "分析模式",
     options=["🔍 手動查詢", "⚖️ 條件篩選", "⚡ 自動掃描", "❤️ 收藏追蹤"],
     index=0,
-    key="mode_selector"
+    key="main_mode_radio"
 )
 
-if st.session_state.last_mode != mode:
+if st.session_state.last_mode != mode_selected:
     st.session_state.results_data = []
-    st.session_state.last_mode = mode
+    st.session_state.last_mode = mode_selected
 
-cfg = {
+analysis_cfg = {
     "p_lookback": 15,
     "min_price": 0.0,
     "check_tri": True,
@@ -312,236 +347,311 @@ cfg = {
     "scan_limit": 200
 }
 
-industry = st.sidebar.selectbox(
-    "篩選產業類別",
+industry_filter = st.sidebar.selectbox(
+    "主要產業類別",
     options=[
         "全部", "半導體", "光電", "電子零組件", "電腦週邊", "通訊網路",
         "塑膠", "紡織", "鋼鐵", "食品", "金融業", "航運", "生技醫療",
         "水泥", "玻璃陶瓷", "其他"
     ],
-    index=1
+    index=1,
+    key="industry_select"
 )
 
-if mode in ["⚖️ 條件篩選", "⚡ 自動掃描"]:
+if mode_selected in ["⚖️ 條件篩選", "⚡ 自動掃描"]:
     st.sidebar.divider()
-    st.sidebar.subheader("技術訊號篩選")
-    c1, c2 = st.sidebar.columns(2)
-    with c1:
-        cfg["check_tri"] = st.checkbox("📐 三角收斂", value=True)
-        cfg["check_box"] = st.checkbox("📦 箱型整理", value=True)
-    with c2:
-        cfg["check_vol"] = st.checkbox("🚀 今日爆量", value=True)
-        cfg["f_ma_filter"] = st.checkbox("限站上 MA20", value=False)
-    cfg["min_price"] = st.sidebar.slider("最低股價 (元)", 0.0, 1000.0, 0.0, 1.0)
-    cfg["scan_limit"] = st.sidebar.slider("掃描上限檔數", 50, 2000, 200, 50)
+    st.sidebar.subheader("篩選條件設定")
+    col_check1, col_check2 = st.sidebar.columns(2)
+    with col_check1:
+        analysis_cfg["check_tri"] = st.checkbox("📐 三角收斂", value=True)
+        analysis_cfg["check_box"] = st.checkbox("📦 箱型整理", value=True)
+    with col_check2:
+        analysis_cfg["check_vol"] = st.checkbox("🚀 今日爆量 (前5天×1.5)", value=True)
+        analysis_cfg["f_ma_filter"] = st.checkbox("限 MA20 之上", value=False)
+    
+    analysis_cfg["min_price"] = st.sidebar.slider(
+        "最低股價門檻 (元)",
+        min_value=0.0,
+        max_value=1000.0,
+        value=0.0,
+        step=1.0
+    )
+    analysis_cfg["scan_limit"] = st.sidebar.slider(
+        "掃描上限 (檔數)",
+        min_value=50,
+        max_value=2000,
+        value=200,
+        step=50,
+        help="建議 200–500 檔，避免記憶體過載"
+    )
 
 st.sidebar.divider()
-st.sidebar.subheader("資料維護")
+st.sidebar.subheader("資料庫管理")
 
-if st.sidebar.button("🔄 更新全市場價格快取", type="primary"):
-    with st.status("正在批次更新價格資料（請耐心等待）...", expanded=True) as status:
-        symbols = list(full_db.keys())
-        progress = st.progress(0)
+update_price_button = st.sidebar.button(
+    "🔄 更新全市場價格快取",
+    type="primary",
+    help="建議每天執行一次，更新後掃描速度極快（本地讀取）"
+)
+
+if update_price_button:
+    with st.status("正在更新全市場價格資料（約 1800 檔）...", expanded=True) as update_status:
+        all_symbols = list(full_db.keys())
+        progress_bar = st.progress(0)
         batch_size = 80
-        updated = 0
-        for i in range(0, len(symbols), batch_size):
-            batch = symbols[i:i+batch_size]
+        updated_items = 0
+        for batch_idx in range(0, len(all_symbols), batch_size):
+            batch_list = all_symbols[batch_idx : batch_idx + batch_size]
             try:
-                data = yf.download(batch, period="1y", group_by="ticker", threads=True, auto_adjust=True)
-                for sym in batch:
-                    if sym in data:
-                        price_cache[sym] = data[sym].copy()
-                        updated += 1
-            except Exception as e:
-                st.warning(f"批次 {i//batch_size+1} 失敗：{str(e)}")
-            progress.progress(min((i + batch_size) / len(symbols), 1.0))
-            time.sleep(1.1)
+                multi_data = yf.download(
+                    batch_list,
+                    period="1y",
+                    group_by="ticker",
+                    threads=True,
+                    auto_adjust=True
+                )
+                for sym in batch_list:
+                    if sym in multi_data.columns.levels[0]:
+                        price_cache[sym] = multi_data[sym].copy()
+                        updated_items += 1
+            except Exception as batch_err:
+                st.warning(f"批次 {batch_idx//batch_size + 1} 下載失敗：{batch_err}")
+            progress_bar.progress(min((batch_idx + batch_size) / len(all_symbols), 1.0))
+            time.sleep(1.2)
         save_price_cache(price_cache)
         st.session_state.last_cache_update = datetime.now()
-        status.update(label=f"價格更新完成（{updated} 檔）", state="complete")
+        update_status.update(
+            label=f"更新完成！處理 {updated_items} 檔資料",
+            state="complete"
+        )
 
-if st.sidebar.button("🔄 更新股票清單 (FinMind)"):
-    update_stock_json_from_finmind()
-    st.session_state.full_db = load_stock_database()
-    st.rerun()
+update_list_button = st.sidebar.button(
+    "🔄 更新股票清單 JSON (FinMind)",
+    type="secondary",
+    help="從 FinMind API 抓取最新股票名稱與產業分類，強制覆蓋本地 JSON"
+)
+
+if update_list_button:
+    new_data, count = update_stock_json_from_finmind()
+    if new_data:
+        st.session_state.full_db = load_stock_database()
+        full_db = st.session_state.full_db
+        st.success("股票清單已更新，請重新選擇模式或產業")
+        st.rerun()
 
 if st.session_state.last_cache_update:
-    st.sidebar.caption(f"價格最後更新：{st.session_state.last_cache_update.strftime('%Y-%m-%d %H:%M')}")
+    st.sidebar.caption(f"最後更新時間：{st.session_state.last_cache_update.strftime('%Y-%m-%d %H:%M')}")
 
 # ────────────────────────────────────────────────
-#               主畫面邏輯
+#               主畫面內容
 # ────────────────────────────────────────────────
-st.title(f"📈 {mode}")
+st.title(f"📈 {mode_selected}")
+st.caption(f"目前模式：{mode_selected} | 產業：{industry_filter} | 總標的：{len(full_db)} 檔")
 
 symbol_list = list(full_db.keys())
-if industry != "全部":
+if industry_filter != "全部":
     symbol_list = [
         s for s in symbol_list
-        if industry in full_db.get(s, {}).get("category", "")
+        if industry_filter in full_db.get(s, {}).get("category", "")
     ]
 
-if mode == "🔍 手動查詢":
-    codes = st.text_input("輸入股票代碼（多檔用半形逗號分隔）", placeholder="2330,2454,2603,1216")
-    if codes:
-        lst = [c.strip().upper() for c in codes.replace("，",",").split(",") if c.strip()]
-        res = []
-        with st.spinner("分析中..."):
-            for c in lst:
-                sym = c if '.' in c else f"{c}.TW"
-                df = fetch_price(sym)
-                name = full_db.get(sym, {}).get("name", c)
-                r = run_analysis(sym, name, df, cfg, True)
-                if r:
-                    res.append(r)
-        st.session_state.results_data = res
+# ────────────────────────────────────────────────
+#               各模式邏輯
+# ────────────────────────────────────────────────
+if mode_selected == "🔍 手動查詢":
+    manual_input = st.text_input(
+        "請輸入股票代碼（多檔用逗號分隔）",
+        placeholder="例：2330, 2454, 2603, 1216",
+        key="manual_input_box"
+    )
+    if manual_input:
+        code_list = [c.strip().upper() for c in manual_input.replace("，", ",").split(",") if c.strip()]
+        results_temp = []
+        with st.spinner("正在分析手動輸入的標的..."):
+            for code in code_list:
+                sym = code if '.' in code else f"{code}.TW"
+                df_data = fetch_price(sym)
+                stock_name = full_db.get(sym, {}).get("name", code)
+                analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=True)
+                if analysis_result:
+                    results_temp.append(analysis_result)
+        st.session_state.results_data = results_temp
 
-elif mode == "⚖️ 條件篩選":
-    if st.button("🚀 開始條件篩選全市場", type="primary", use_container_width=True):
-        scan_symbols = symbol_list[:cfg["scan_limit"]]
-        res = []
-        with st.status(f"掃描 {len(scan_symbols)} 檔 {industry} 類股...", expanded=True) as stt:
-            prog = st.progress(0)
+elif mode_selected == "⚖️ 條件篩選":
+    st.info("請設定左側條件，然後點擊下方按鈕開始全市場掃描")
+    if st.button("🚀 開始條件篩選", type="primary", use_container_width=True):
+        max_scan = analysis_cfg["scan_limit"]
+        scan_symbols = symbol_list[:max_scan]
+        temp_results = []
+        with st.status(f"掃描中...（{len(scan_symbols)} 檔，{industry_filter}類）", expanded=True) as scan_status:
+            progress_bar = st.progress(0)
             for idx, sym in enumerate(scan_symbols):
-                df = fetch_price(sym)
-                name = full_db.get(sym, {}).get("name", "未知")
-                r = run_analysis(sym, name, df, cfg, False)
-                if r:
-                    res.append(r)
-                prog.progress((idx+1)/len(scan_symbols))
-                if (idx+1) % 40 == 0:
-                    time.sleep(0.03)
-            st.session_state.results_data = res
-            stt.update(label=f"篩選完成，找到 {len(res)} 檔符合條件", state="complete")
+                df_data = fetch_price(sym)
+                stock_name = full_db.get(sym, {}).get("name", "未知")
+                analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=False)
+                if analysis_result:
+                    temp_results.append(analysis_result)
+                progress_bar.progress((idx + 1) / len(scan_symbols))
+                if (idx + 1) % 50 == 0:
+                    time.sleep(0.05)
+            st.session_state.results_data = temp_results
+            scan_status.update(
+                label=f"掃描完成！共找到 {len(temp_results)} 檔符合條件",
+                state="complete"
+            )
 
-elif mode == "⚡ 自動掃描":
-    st_autorefresh(interval=60000, key="auto_refresh")
-    st.info("自動掃描模式已啟動，每 60 秒更新一次（限制前 150 檔）")
-    scan_symbols = symbol_list[:150]
-    res = []
-    with st.spinner("正在自動掃描..."):
+elif mode_selected == "⚡ 自動掃描":
+    st_autorefresh(interval=60000, key="auto_scan_refresh")
+    st.warning("自動掃描模式啟動，每 60 秒更新一次（限制前 150 檔避免過載）")
+    auto_scan_limit = min(len(symbol_list), 150)
+    scan_symbols = symbol_list[:auto_scan_limit]
+    temp_results = []
+    with st.spinner(f"自動掃描 {len(scan_symbols)} 檔中..."):
         for sym in scan_symbols:
-            df = fetch_price(sym)
-            name = full_db.get(sym, {}).get("name", "未知")
-            r = run_analysis(sym, name, df, cfg, False)
-            if r:
-                res.append(r)
-    st.session_state.results_data = res
+            df_data = fetch_price(sym)
+            stock_name = full_db.get(sym, {}).get("name", "未知")
+            analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=False)
+            if analysis_result:
+                temp_results.append(analysis_result)
+    st.session_state.results_data = temp_results
 
-elif mode == "❤️ 收藏追蹤":
-    if not st.session_state.favorites:
-        st.info("目前尚無收藏股票，請從其他模式加入")
+elif mode_selected == "❤️ 收藏追蹤":
+    fav_count = len(st.session_state.favorites)
+    if fav_count == 0:
+        st.info("目前沒有收藏股票。從其他模式點擊 ❤️ 加入收藏吧！")
     else:
-        if st.button("🔄 更新所有收藏股最新資料", type="primary"):
-            res = []
-            with st.status("更新收藏清單中..."):
-                for sym in st.session_state.favorites:
-                    df = fetch_price(sym)
-                    name = full_db.get(sym, {}).get("name", sym)
-                    r = run_analysis(sym, name, df, cfg, True)
-                    if r:
-                        res.append(r)
-            st.session_state.results_data = res
-            st.success(f"更新完成，共 {len(res)} 檔有效資料")
+        st.subheader(f"收藏清單（{fav_count} 檔）")
+        if st.button("🔄 立即更新收藏報價", type="primary"):
+            temp_results = []
+            with st.status("更新收藏股中..."):
+                for sym in list(st.session_state.favorites):
+                    df_data = fetch_price(sym)
+                    stock_name = full_db.get(sym, {}).get("name", sym)
+                    analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=True)
+                    if analysis_result:
+                        temp_results.append(analysis_result)
+            st.session_state.results_data = temp_results
+            st.success(f"更新完成，共 {len(temp_results)} 檔")
 
 # ────────────────────────────────────────────────
-#               結果呈現
+#               結果呈現區塊
 # ────────────────────────────────────────────────
-results = st.session_state.results_data
-if mode == "❤️ 收藏追蹤":
-    results = [r for r in results if r["sid"] in st.session_state.favorites]
+display_results = st.session_state.results_data
+if mode_selected == "❤️ 收藏追蹤":
+    display_results = [item for item in display_results if item["sid"] in st.session_state.favorites]
 
-if results:
-    # 表格
-    rows = [{
-        "收藏": r["收藏"],
-        "代碼": r["sid"],
-        "名稱": r["名稱"],
-        "現價": r["現價"],
-        "趨勢": r["趨勢"],
-        "MA20": r["MA20"],
-        "MA60": r["MA60"],
-        "訊號": r["符合訊號"],
-        "Yahoo": r["Yahoo"]
-    } for r in results]
-
-    df_show = pd.DataFrame(rows)
-
-    edited = st.data_editor(
-        df_show,
+if display_results:
+    table_records = []
+    for item in display_results:
+        table_records.append({
+            "收藏": item["收藏"],
+            "代碼": item["sid"],
+            "名稱": item["名稱"],
+            "現價": item["現價"],
+            "趨勢": item["趨勢"],
+            "MA20": item["MA20"],
+            "MA60": item["MA60"],
+            "訊號": item["符合訊號"],
+            "Yahoo": item["Yahoo"]
+        })
+    
+    df_table = pd.DataFrame(table_records)
+    
+    edited_table = st.data_editor(
+        df_table,
         column_config={
             "收藏": st.column_config.CheckboxColumn("❤️ 收藏", width="small"),
-            "Yahoo": st.column_config.LinkColumn("Yahoo", display_text="🔍 查看", width="medium"),
+            "Yahoo": st.column_config.LinkColumn("Yahoo", display_text="🔍 Yahoo", width="medium"),
             "現價": st.column_config.NumberColumn(format="%.2f"),
             "MA20": st.column_config.NumberColumn(format="%.2f"),
             "MA60": st.column_config.NumberColumn(format="%.2f"),
         },
         hide_index=True,
         use_container_width=True,
-        key=f"table_{mode}_{industry}"
+        key=f"editor_{mode_selected}_{industry_filter}"
     )
-
-    new_favs = set(edited[edited["收藏"] == True]["代碼"].tolist())
-    if new_favs != st.session_state.favorites:
-        st.session_state.favorites = new_favs
+    
+    new_favorites = set(edited_table[edited_table["收藏"] == True]["代碼"].tolist())
+    if new_favorites != st.session_state.favorites:
+        st.session_state.favorites = new_favorites
         st.rerun()
-
+    
     st.divider()
-    st.subheader("個股 K 線與壓力/支撐趨勢線")
-
-    for r in results:
-        with st.expander(f"{r['sid']}  {r['名稱']}  |  {r['訊號']}  |  {r['趨勢']}"):
+    st.subheader("個股 K 線與趨勢線詳圖")
+    
+    for item in display_results:
+        with st.expander(
+            f"{item['sid']} {item['名稱']} | {item['符合訊號']} | {item['趨勢']}",
+            expanded=False
+        ):
             cols = st.columns(3)
-            cols[0].metric("現價", f"{r['現價']:.2f} 元")
-            cols[1].metric("MA20", f"{r['MA20']:.2f}")
-            cols[2].metric("趨勢", r["趨勢"])
-
-            plot_df = r["df"].tail(60).copy()
+            cols[0].metric("現價", f"{item['現價']:.2f} 元")
+            cols[1].metric("MA20", f"{item['MA20']:.2f}")
+            cols[2].metric("趨勢", item["趨勢"])
+            
+            plot_df = item["df"].iloc[-60:].copy()
             fig = go.Figure()
-
+            
             fig.add_trace(go.Candlestick(
                 x=plot_df.index,
-                open=plot_df['Open'], high=plot_df['High'],
-                low=plot_df['Low'], close=plot_df['Close'],
-                name="K線",
+                open=plot_df['Open'],
+                high=plot_df['High'],
+                low=plot_df['Low'],
+                close=plot_df['Close'],
+                name="K 線",
                 increasing_line_color="#ef5350",
                 decreasing_line_color="#26a69a"
             ))
-
-            sh, ih, sl, il, xv = r["lines"]
-            xd = plot_df.index[-len(xv):]
-
-            fig.add_trace(go.Scatter(x=xd, y=sh*xv + ih,
-                                     mode='lines', line=dict(color='red', dash='dash', width=2),
-                                     name='壓力線'))
-            fig.add_trace(go.Scatter(x=xd, y=sl*xv + il,
-                                     mode='lines', line=dict(color='lime', dash='dash', width=2),
-                                     name='支撐線'))
-
-            template = "plotly_dark" if st.get_option("theme.base") == "dark" else "plotly_white"
-
+            
+            sh, ih, sl, il, x_vals = item["lines"]
+            x_dates = plot_df.index[-len(x_vals):]
+            
+            fig.add_trace(go.Scatter(
+                x=x_dates, y=sh * x_vals + ih,
+                mode='lines', line=dict(color='red', dash='dash', width=2), name='壓力線'
+            ))
+            
+            fig.add_trace(go.Scatter(
+                x=x_dates, y=sl * x_vals + il,
+                mode='lines', line=dict(color='lime', dash='dash', width=2), name='支撐線'
+            ))
+            
+            try:
+                theme_setting = st.get_option("theme.base")
+                chart_template = "plotly_dark" if theme_setting == "dark" else "plotly_white"
+            except:
+                chart_template = "plotly_white"
+            
             fig.update_layout(
                 height=480,
                 margin=dict(l=10, r=10, t=30, b=10),
                 xaxis_rangeslider_visible=False,
-                template=template
+                template=chart_template
             )
-            st.plotly_chart(fig, use_container_width=True, key=f"chart_{r['sid']}")
+            st.plotly_chart(fig, use_container_width=True, key=f"chart_{item['sid']}")
 
 else:
-    if mode == "⚖️ 條件篩選":
-        st.info("請設定條件後按「開始條件篩選全市場」")
-    elif mode == "❤️ 收藏追蹤":
-        st.info("收藏清單為空，請先加入感興趣的股票")
+    if mode_selected == "⚖️ 條件篩選":
+        st.info("尚未執行篩選，請設定條件後按「開始條件篩選」")
+    elif mode_selected == "❤️ 收藏追蹤":
+        st.info("收藏清單為空，快去其他模式加入喜歡的股票吧！")
     else:
-        st.caption("目前無資料，請執行分析或加入收藏")
+        st.caption("目前無符合條件標的，或尚未執行分析")
 
 # ────────────────────────────────────────────────
 #               頁尾資訊
 # ────────────────────────────────────────────────
 st.markdown("---")
-st.caption("台股 Pro 旗艦戰情室 | 資料來源：yfinance + FinMind API | 僅供學習參考")
+st.caption(
+    "台股 Pro 旗艦戰情室 | "
+    "股票清單來源：taiwan_full_market.json（FinMind 自動更新） | "
+    "價格資料來源：yfinance + 本地快取 | "
+    "僅供學習與參考，投資有風險，請自行評估"
+)
+
 if st.session_state.last_cache_update:
     st.caption(f"價格資料最後更新：{st.session_state.last_cache_update.strftime('%Y-%m-%d %H:%M')}")
 else:
-    st.caption("尚未更新價格快取，請點擊側邊欄按鈕更新")
-st.caption("投資有風險，請謹慎評估，祝交易順利！📈")
+    st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
+
+st.caption("祝交易順利！📈")
