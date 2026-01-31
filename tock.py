@@ -602,15 +602,16 @@ elif mode_selected == "⚡ 自動掃描":
     display_results = temp_results
 
 # -------- 收藏追蹤模式 --------
+# ────────────────────────────────────────────────
+# 收藏追蹤模式
+# ────────────────────────────────────────────────
 elif mode_selected == "❤️ 收藏追蹤":
     industry_filter = None  # 忽略產業篩選
     fav_syms = list(st.session_state.favorites)
-
     if not fav_syms:
         st.info("目前沒有收藏股票。從其他模式點擊 ❤️ 加入收藏吧！")
     else:
         st.subheader(f"收藏清單（{len(fav_syms)} 檔）")
-
         # 點擊按鈕才更新收藏股報價（累加模式）
         if st.button("🔄 立即更新收藏報價", type="primary"):
             with st.status("更新收藏股中..."):
@@ -655,10 +656,46 @@ elif mode_selected == "❤️ 收藏追蹤":
                 display_results.append(r)
                 seen_sids.add(r["sid"])
 
-# ================= 其他模式（條件篩選等） =================
+# ────────────────────────────────────────────────
+# ★★★ 關鍵修改點：強制把所有收藏股票補進 display_results ★★★
+# 放在所有模式邏輯之後、結果呈現之前
+# 這樣條件篩選、自動掃描重新跑時，收藏股也不會消失
+for fav_sid in list(st.session_state.favorites):
+    if not any(r["sid"] == fav_sid for r in display_results):
+        df_data = fetch_price(fav_sid)
+        name = full_db.get(fav_sid, {}).get("name", fav_sid)  # 注意是 "name"
+        result = run_analysis(
+            fav_sid,
+            name,
+            df_data,
+            analysis_cfg,
+            is_manual=True  # 強制顯示
+        )
+        if result:
+            display_results.append(result)
+        else:
+            # 防呆：分析失敗也至少顯示基本資訊
+            if not df_data.empty:
+                current_price = float(df_data['Close'].iloc[-1])
+                ma20 = float(df_data['Close'].rolling(20).mean().iloc[-1]) if len(df_data) >= 20 else None
+                ma60 = float(df_data['Close'].rolling(60).mean().iloc[-1]) if len(df_data) >= 60 else None
+                trend = '🔴 多頭排列' if (ma20 is not None and ma60 is not None and ma20 > ma60) else '🟢 空頭排列'
+                display_results.append({
+                    "收藏": True,
+                    "sid": fav_sid,
+                    "名稱": name,
+                    "現價": round(current_price, 2),
+                    "趨勢": trend,
+                    "MA20": round(ma20, 2) if ma20 is not None else None,
+                    "MA60": round(ma60, 2) if ma60 is not None else None,
+                    "符合訊號": "已收藏（本次掃描未符合條件）",
+                    "Yahoo": f"https://tw.stock.yahoo.com/quote/{fav_sid.split('.')[0]}",
+                    "df": df_data.copy(),
+                    "lines": None
+                })
 
 # ────────────────────────────────────────────────
-#                 結果呈現區塊
+# 結果呈現區塊（所有模式共用）
 # ────────────────────────────────────────────────
 if display_results:
     table_records = []
@@ -674,7 +711,6 @@ if display_results:
             "訊號": item["符合訊號"],
             "Yahoo": item["Yahoo"]
         })
-
     df_table = pd.DataFrame(table_records)
 
     # ===== 表格編輯器 =====
@@ -689,7 +725,7 @@ if display_results:
         },
         hide_index=True,
         use_container_width=True,
-        key=f"editor_{mode_selected}_{industry_filter}"
+        key=f"editor_{mode_selected}_{industry_filter or 'all'}"  # 建議改成固定 key 或加 or 'all' 避免重置
     )
 
     # 更新收藏列表
@@ -753,7 +789,6 @@ if display_results:
                 xaxis_rangeslider_visible=False,
                 template=chart_template
             )
-
             st.plotly_chart(fig, use_container_width=True, key=f"chart_{item['sid']}")
 
 # ================= 沒有結果時的提示 =================
@@ -766,7 +801,7 @@ else:
         st.caption("目前無符合條件標的，或尚未執行分析")
 
 # ────────────────────────────────────────────────
-#               頁尾資訊
+# 頁尾資訊
 # ────────────────────────────────────────────────
 st.markdown("---")
 st.caption(
@@ -775,14 +810,8 @@ st.caption(
     "價格資料來源：yfinance + 本地快取 | "
     "僅供學習與參考，投資有風險，請自行評估"
 )
-
 if st.session_state.last_cache_update:
     st.caption(f"價格資料最後更新：{st.session_state.last_cache_update.strftime('%Y-%m-%d %H:%M')}")
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
-
 st.caption("祝交易順利！📈")
-
-
-
-
