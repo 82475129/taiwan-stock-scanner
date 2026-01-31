@@ -8,3 +8,4 @@ plotly>=5.18.0
 streamlit-autorefresh>=1.0.1
 scipy>=1.11.0
 tqdm>=4.66.0
+requests
