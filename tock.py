@@ -51,7 +51,7 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # 頁面基本設定
 # ================================
 st.set_page_config(
-    page_title="台股 Pro 旗艦戰情室 - 完整本地版",
+    page_title="台股 Pro 旗艦戰情室 - 完整本地版",
     page_icon="📈",
     layout="wide",
     initial_sidebar_state="expanded",
@@ -684,4 +684,5 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
+
 
