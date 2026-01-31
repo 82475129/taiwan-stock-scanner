@@ -2,50 +2,61 @@ name: 自動更新股票資料庫
 
 on:
   schedule:
-    - cron: '0 9 * * *' # UTC 09:00 = 台灣時間 17:00
+    # 每天台灣時間 17:00 執行 (UTC 09:00)
+    - cron: '0 9 * * *'
   push:
     branches: [ main ]
-  workflow_dispatch: # 允許手動點擊執行
+  workflow_dispatch: # 允許你隨時在 GitHub UI 手動點擊執行
 
 jobs:
   update-process:
     runs-on: ubuntu-latest
+    # 必須開啟寫入權限，否則 push 會報 128 或 403 錯誤
     permissions:
       contents: write
       
     steps:
-    - name: 檢出程式碼
+    - name: 1. 檢出程式碼 (Checkout)
       uses: actions/checkout@v4
+      with:
+        # fetch-depth: 0 對於後續的 git pull/rebase 至關重要
+        fetch-depth: 0
 
-    - name: 設定 Python 環境
+    - name: 2. 設定 Python 環境
       uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-        cache: 'pip' # 開啟快取加速安裝
+        cache: 'pip'
 
-    - name: 安裝必要套件
+    - name: 3. 安裝必要套件 (Pandas & Lxml)
       run: |
         python -m pip install --upgrade pip
         pip install requests pandas lxml html5lib
-        # 如果你的 update_db.py 還是用舊版 BeautifulSoup，就補上 beautifulsoup4
-        # pip install beautifulsoup4 
 
-    - name: 執行更新黨員 (update_db.py)
+    - name: 4. 執行更新腳本 (update_db.py)
       run: python update_db.py
 
-    - name: 提交與推送變更
+    - name: 5. 處理 Git 提交與推送 (解決 Exit Code 128)
+      env:
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       run: |
+        # 設定機器人身分
         git config --global user.name "github-actions[bot]"
         git config --global user.email "github-actions[bot]@users.noreply.github.com"
         
-        # 先拉取遠端變更，防止衝突
-        git pull origin main
-        
-        # 檢查是否有檔案變更，有變更才 commit
+        # 檢查檔案是否有變動
         git add taiwan_full_market.json
-        if [ -n "$(git status --porcelain)" ]; then
-          git commit -m "🤖 自動更新全市場清單: $(date +'%Y-%m-%d %H:%M')"
-          git push
-        else
-          echo "資料無變動，跳過提交。"
+        if [ -z "$(git status --porcelain)" ]; then
+          echo "✅ 資料庫已是最新，無需更新。"
+          exit 0
         fi
+
+        # 提交變動
+        git commit -m "🤖 自動更新清單: $(date +'%Y-%m-%d %H:%M')"
+        
+        # --- 解決 128 錯誤的核心步驟 ---
+        # 確保在推送前先拉取遠端最新變動並進行重基 (Rebase)
+        git pull --rebase origin main
+        
+        # 推送回主分支
+        git push origin main
