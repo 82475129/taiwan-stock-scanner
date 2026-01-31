@@ -581,7 +581,7 @@ elif mode_selected == "❤️ 收藏追蹤":
     else:
         st.subheader(f"收藏清單（{len(fav_syms)} 檔）")
         
-        # 點擊按鈕才更新收藏股報價
+        # 點擊按鈕才更新收藏股報價（累加模式）
         if st.button("🔄 立即更新收藏報價", type="primary"):
             with st.status("更新收藏股中..."):
                 temp_results = []
@@ -591,8 +591,9 @@ elif mode_selected == "❤️ 收藏追蹤":
                     analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=True)
                     if analysis_result:
                         temp_results.append(analysis_result)
-                st.session_state.results_data = temp_results
-            st.success(f"更新完成，共 {len(temp_results)} 檔")
+                # ✅ 累加模式
+                st.session_state.results_data += temp_results
+            st.success(f"更新完成，共新增 {len(temp_results)} 檔")
         
         # 生成 display_results（收藏股模式，強制顯示所有收藏股）
         for sym in fav_syms:
@@ -602,9 +603,7 @@ elif mode_selected == "❤️ 收藏追蹤":
             else:
                 df_data = fetch_price(sym)
                 stock_name = full_db.get(sym, {}).get("name", sym)
-                # 這裡 is_manual=True，強制回傳分析結果
                 analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=True)
-                # 如果 analysis_result 是 None，也補一個最基本字典，避免空白
                 if analysis_result is None:
                     analysis_result = {
                         "收藏": True,
@@ -621,10 +620,7 @@ elif mode_selected == "❤️ 收藏追蹤":
                     }
                 display_results.append(analysis_result)
 
-
-
 # ================= 其他模式（條件篩選等） =================
-# display_results 已是空列表，不會報錯
 
 # ────────────────────────────────────────────────
 #                 結果呈現區塊
@@ -697,17 +693,17 @@ if display_results:
             ))
             
             # 趨勢線
-            sh, ih, sl, il, x_vals = item["lines"]
-            x_dates = plot_df.index[-len(x_vals):]
-            
-            fig.add_trace(go.Scatter(
-                x=x_dates, y=sh * x_vals + ih,
-                mode='lines', line=dict(color='red', dash='dash', width=2), name='壓力線'
-            ))
-            fig.add_trace(go.Scatter(
-                x=x_dates, y=sl * x_vals + il,
-                mode='lines', line=dict(color='lime', dash='dash', width=2), name='支撐線'
-            ))
+            if item["lines"]:
+                sh, ih, sl, il, x_vals = item["lines"]
+                x_dates = plot_df.index[-len(x_vals):]
+                fig.add_trace(go.Scatter(
+                    x=x_dates, y=sh * x_vals + ih,
+                    mode='lines', line=dict(color='red', dash='dash', width=2), name='壓力線'
+                ))
+                fig.add_trace(go.Scatter(
+                    x=x_dates, y=sl * x_vals + il,
+                    mode='lines', line=dict(color='lime', dash='dash', width=2), name='支撐線'
+                ))
             
             # 主題自動偵測
             try:
@@ -751,6 +747,8 @@ else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 
 st.caption("祝交易順利！📈")
+
+
 
 
 
