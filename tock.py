@@ -732,7 +732,6 @@ if display_results:
     new_favorites = set(edited_table[edited_table["收藏"] == True]["代碼"].tolist())
     if new_favorites != st.session_state.favorites:
         st.session_state.favorites = new_favorites
-        st.rerun()
 
     st.divider()
     st.subheader("個股 K 線與趨勢線詳圖")
@@ -815,4 +814,5 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
+
 
