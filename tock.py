@@ -238,38 +238,116 @@ def fetch_price(symbol: str) -> pd.DataFrame:
         return pd.DataFrame()
 
 
-def fetch_stock_news(symbol_code):
-    clean_code = symbol_code.split('.')[0]
-    url = f"https://tw.stock.yahoo.com/quote/{clean_code}/news"
-    
-    try:
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
-        resp = requests.get(url, headers=headers, timeout=10)
-        soup = BeautifulSoup(resp.text, 'html.parser')
-        
-        news_items = []
-        # Yahoo 股市新聞標題通常包裹在 h3 內，且連結包含 /news/
-        # 使用 select 找尋所有包含 news 字眼的連結
-        links = soup.select('a[href*="/news/"]')
-        
-        seen_titles = set()
-        for link in links:
-            title = link.get_text().strip()
-            href = link.get('href')
-            
-            # 過濾掉重複標題或空內容
-            if title and href and title not in seen_titles:
-                # 處理相對路徑
-                full_href = href if href.startswith('http') else f"https://tw.stock.yahoo.com{href}"
-                news_items.append({"title": title, "link": full_href})
-                seen_titles.add(title)
-            
-            if len(news_items) >= 5: break # 滿 5 則就停
-            
-        return news_items
-    except Exception as e:
-        return [] # 失敗回傳空清單，避免 UI 崩潰
+# ================================
+# 結果呈現區塊 - 修正 NameError 與整合新聞
+# ================================
 
+# 🛡️ 防呆初始化：確保 display_results 永遠存在，避免 NameError
+display_results = []
+
+# 根據目前的 session_state 抓取資料
+if 'results_data' in st.session_state:
+    display_results = st.session_state.results_data
+
+# 收藏模式額外過濾邏輯
+if mode_selected == "❤️ 收藏追蹤":
+    display_results = [item for item in display_results if item["sid"] in st.session_state.favorites]
+
+# 開始呈現 UI
+if display_results:
+    # --- A. 表格顯示區 ---
+    table_records = []
+    for item in display_results:
+        table_records.append({
+            "收藏": item["sid"] in st.session_state.favorites,
+            "代碼": item["sid"],
+            "名稱": item["名稱"],
+            "現價": item["現價"],
+            "趨勢": item["趨勢"],
+            "MA20": item["MA20"],
+            "MA60": item["MA60"],
+            "訊號": item["符合訊號"],
+            "Yahoo": item["Yahoo"]
+        })
+    df_table = pd.DataFrame(table_records)
+    
+    edited_table = st.data_editor(
+        df_table,
+        column_config={
+            "收藏": st.column_config.CheckboxColumn("❤️ 收藏", width="small"),
+            "Yahoo": st.column_config.LinkColumn("Yahoo", display_text="🔍 連結", width="medium"),
+            "現價": st.column_config.NumberColumn(format="%.2f"),
+        },
+        hide_index=True,
+        use_container_width=True,
+        key=f"editor_{mode_selected}_{industry_filter}"
+    )
+
+    # 處理即時收藏變更
+    new_favorites = set(edited_table[edited_table["收藏"] == True]["代碼"].tolist())
+    if new_favorites != st.session_state.favorites:
+        st.session_state.favorites = new_favorites
+        st.rerun()
+
+    st.divider()
+
+    # --- B. K線圖詳情區 (整合 BeautifulSoup 新聞) ---
+    st.subheader("🔭 個股深度戰情室 (K線圖 + 即時新聞)")
+    for item in display_results:
+        with st.expander(
+            f"{item['sid']} {item['名稱']} | {item['符合訊號']} | {item['趨勢']}",
+            expanded=(len(display_results) == 1)
+        ):
+            # 建立排版：左側圖表，右側新聞
+            col_chart, col_news = st.columns([2, 1])
+
+            with col_chart:
+                # 數據指標
+                m1, m2, m3 = st.columns(3)
+                m1.metric("現價", f"{item['現價']:.2f}")
+                m2.metric("MA20", f"{item['MA20']:.2f}")
+                m3.metric("狀態", item["趨勢"].split(' ')[-1])
+
+                # 繪製 K 線
+                plot_df = item["df"].iloc[-60:].copy()
+                fig = go.Figure(data=[go.Candlestick(
+                    x=plot_df.index, open=plot_df['Open'], high=plot_df['High'],
+                    low=plot_df['Low'], close=plot_df['Close'], name="K 線"
+                )])
+                
+                # 繪製趨勢線 (壓力/支撐)
+                sh, ih, sl, il, x_vals = item["lines"]
+                x_dates = plot_df.index[-len(x_vals):]
+                fig.add_trace(go.Scatter(x=x_dates, y=sh * x_vals + ih, mode='lines', line=dict(color='red', dash='dash'), name='壓力'))
+                fig.add_trace(go.Scatter(x=x_dates, y=sl * x_vals + il, mode='lines', line=dict(color='lime', dash='dash'), name='支撐'))
+                
+                fig.update_layout(height=400, margin=dict(l=5, r=5, t=10, b=10), xaxis_rangeslider_visible=False, template="plotly_dark")
+                st.plotly_chart(fig, use_container_width=True, key=f"chart_{item['sid']}")
+
+            with col_news:
+                st.write("📰 **最新消息 (美麗湯)**")
+                # 呼叫你之前定義的 fetch_stock_news 函式
+                # 請確保 fetch_stock_news 定義在程式碼上方
+                news_list = fetch_stock_news(item['sid']) 
+                
+                if news_list:
+                    for news in news_list:
+                        st.markdown(f"▫️ [{news['title']}]({news['link']})")
+                else:
+                    st.caption("暫無即時新聞或抓取失敗")
+                
+                st.divider()
+                st.write(f"💡 **訊號分析**")
+                st.caption(f"觸發：{item['符合訊號']}")
+
+else:
+    # --- C. 無結果提示區 ---
+    if mode_selected == "⚖️ 條件篩選":
+        st.info("尚未執行篩選，請設定條件後按「開始條件篩選」")
+    elif mode_selected == "❤️ 收藏追蹤":
+        st.info("收藏清單為空，快去其他模式加入喜歡的股票吧！")
+    else:
+        st.caption("目前無符合條件標的，或尚未執行分析")
 
 # ================================
 # 核心技術分析函式
@@ -708,6 +786,7 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
+
 
 
 
