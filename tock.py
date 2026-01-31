@@ -40,24 +40,6 @@ import sys
 import traceback
 import requests
 
-# ================================
-# 自動清理非印刷字元（全形空格、不可見字元）
-# ================================
-import re
-import sys
-
-def clean_nonprintable(text: str) -> str:
-    # 移除所有不可見字元（包括全形空格 U+00A0）
-    return re.sub(r'[\u00A0\u200B-\u200D\uFEFF]', '', text)
-
-# 如果想自動清理自己讀入的程式檔案
-this_file = sys.argv[0] if len(sys.argv) > 0 else __file__
-with open(this_file, 'r', encoding='utf-8') as f:
-    content = f.read()
-cleaned = clean_nonprintable(content)
-with open(this_file, 'w', encoding='utf-8') as f:
-    f.write(cleaned)
-print("✅ 已清理非印刷字元與全形空格")
 
 
 # ================================
@@ -72,10 +54,10 @@ warnings.filterwarnings("ignore", category=UserWarning)
 # ================================
 st.set_page_config(
     page_title="台股 Pro 旗艦戰情室 - 完整本地版",
-    page_icon="📈",
-    layout="wide",
-    initial_sidebar_state="expanded",
-    menu_items={
+    page_icon="📈",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={
         'Get Help': 'https://github.com/streamlit/streamlit',
         'Report a bug': "https://github.com/streamlit/streamlit/issues",
         'About': "台股 Pro 旗艦戰情室 - 個人學習專案，非商業用途"
@@ -704,6 +686,7 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
+
 
 
 
