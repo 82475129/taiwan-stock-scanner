@@ -38,7 +38,7 @@ import warnings
 import os
 import sys
 import traceback
-import requests  # 新增：用於 FinMind API 更新股票清單
+import requests
 
 # ================================
 # 忽略常見警告，讓介面更乾淨
@@ -684,3 +684,4 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
+
