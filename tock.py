@@ -575,12 +575,12 @@ elif mode_selected == "⚡ 自動掃描":
 # -------- 收藏追蹤模式 --------
 elif mode_selected == "❤️ 收藏追蹤":
     fav_syms = list(st.session_state.favorites)
-    
+
     if not fav_syms:
         st.info("目前沒有收藏股票。從其他模式點擊 ❤️ 加入收藏吧！")
     else:
         st.subheader(f"收藏清單（{len(fav_syms)} 檔）")
-        
+
         # 點擊按鈕才更新收藏股報價（累加模式）
         if st.button("🔄 立即更新收藏報價", type="primary"):
             with st.status("更新收藏股中..."):
@@ -590,18 +590,14 @@ elif mode_selected == "❤️ 收藏追蹤":
                     stock_name = full_db.get(sym, {}).get("name", sym)
                     analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=True)
                     if analysis_result:
-                        # ✅ 累加模式，避免重複
-                        if not any(x["sid"] == sym for x in st.session_state.results_data):
-                            st.session_state.results_data.append(analysis_result)
-                            temp_results.append(analysis_result)
+                        st.session_state.results_data.append(analysis_result)
+                        temp_results.append(analysis_result)
             st.success(f"更新完成，共新增 {len(temp_results)} 檔")
-        
-        # 生成 display_results（收藏股模式，強制顯示所有收藏股）
+
+        # ===== 生成 display_results，去重，收藏股強制顯示 =====
+        # 先累加所有收藏股分析結果
         for sym in fav_syms:
-            cached = next((x for x in st.session_state.results_data if x["sid"] == sym), None)
-            if cached:
-                display_results.append(cached)
-            else:
+            if not any(x["sid"] == sym for x in st.session_state.results_data):
                 df_data = fetch_price(sym)
                 stock_name = full_db.get(sym, {}).get("name", sym)
                 analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=True)
@@ -619,7 +615,15 @@ elif mode_selected == "❤️ 收藏追蹤":
                         "df": df_data.copy() if not df_data.empty else pd.DataFrame(),
                         "lines": None
                     }
-                display_results.append(analysis_result)
+                st.session_state.results_data.append(analysis_result)
+
+        # 去重 display_results，保證每支股票只顯示一次
+        seen_sids = set()
+        display_results = []
+        for r in st.session_state.results_data:
+            if r["sid"] not in seen_sids:
+                display_results.append(r)
+                seen_sids.add(r["sid"])
 
 # ================= 其他模式（條件篩選等） =================
 
@@ -640,9 +644,9 @@ if display_results:
             "訊號": item["符合訊號"],
             "Yahoo": item["Yahoo"]
         })
-    
+
     df_table = pd.DataFrame(table_records)
-    
+
     # ===== 表格編輯器 =====
     edited_table = st.data_editor(
         df_table,
@@ -657,16 +661,16 @@ if display_results:
         use_container_width=True,
         key=f"editor_{mode_selected}_{industry_filter}"
     )
-    
+
     # 更新收藏列表
     new_favorites = set(edited_table[edited_table["收藏"] == True]["代碼"].tolist())
     if new_favorites != st.session_state.favorites:
         st.session_state.favorites = new_favorites
         st.rerun()
-    
+
     st.divider()
     st.subheader("個股 K 線與趨勢線詳圖")
-    
+
     # ===== K 線圖 + 趨勢線 =====
     for item in display_results:
         with st.expander(
@@ -677,10 +681,10 @@ if display_results:
             cols[0].metric("現價", f"{item['現價']:.2f} 元")
             cols[1].metric("MA20", f"{item['MA20']:.2f}")
             cols[2].metric("趨勢", item["趨勢"])
-            
+
             plot_df = item["df"].iloc[-60:].copy()
             fig = go.Figure()
-            
+
             # K線
             fig.add_trace(go.Candlestick(
                 x=plot_df.index,
@@ -692,7 +696,7 @@ if display_results:
                 increasing_line_color="#ef5350",
                 decreasing_line_color="#26a69a"
             ))
-            
+
             # 趨勢線
             if item["lines"]:
                 sh, ih, sl, il, x_vals = item["lines"]
@@ -705,21 +709,21 @@ if display_results:
                     x=x_dates, y=sl * x_vals + il,
                     mode='lines', line=dict(color='lime', dash='dash', width=2), name='支撐線'
                 ))
-            
+
             # 主題自動偵測
             try:
                 theme_setting = st.get_option("theme.base")
                 chart_template = "plotly_dark" if theme_setting == "dark" else "plotly_white"
             except:
                 chart_template = "plotly_white"
-            
+
             fig.update_layout(
                 height=480,
                 margin=dict(l=10, r=10, t=30, b=10),
                 xaxis_rangeslider_visible=False,
                 template=chart_template
             )
-            
+
             st.plotly_chart(fig, use_container_width=True, key=f"chart_{item['sid']}")
 
 # ================= 沒有結果時的提示 =================
