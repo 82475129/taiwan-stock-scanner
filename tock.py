@@ -713,30 +713,61 @@ if display_results:
         })
     df_table = pd.DataFrame(table_records)
 
-    # ===== 表格編輯器 =====
+    # 判斷是否為收藏追蹤模式
+    is_favorite_mode = (mode_selected == "❤️ 收藏追蹤")
+
+    # 動態決定收藏欄位的行為
+    if is_favorite_mode:
+        # 收藏頁面：完全可編輯（可勾選、可取消）
+        checkbox_config = st.column_config.CheckboxColumn(
+            "❤️ 收藏",
+            width="small",
+            disabled=False
+        )
+    else:
+        # 其他頁面：已收藏的不能取消（disabled），未收藏的可以勾選
+        checkbox_config = st.column_config.CheckboxColumn(
+            "❤️ 收藏",
+            width="small",
+            disabled=False  # 表面上不禁用，但我們後面會處理
+        )
+
+    column_config = {
+        "收藏": checkbox_config,
+        "Yahoo": st.column_config.LinkColumn("Yahoo", display_text="🔍 Yahoo", width="medium"),
+        "現價": st.column_config.NumberColumn(format="%.2f"),
+        "MA20": st.column_config.NumberColumn(format="%.2f"),
+        "MA60": st.column_config.NumberColumn(format="%.2f"),
+    }
+
     edited_table = st.data_editor(
         df_table,
-        column_config={
-            "收藏": st.column_config.CheckboxColumn("❤️ 收藏", width="small"),
-            "Yahoo": st.column_config.LinkColumn("Yahoo", display_text="🔍 Yahoo", width="medium"),
-            "現價": st.column_config.NumberColumn(format="%.2f"),
-            "MA20": st.column_config.NumberColumn(format="%.2f"),
-            "MA60": st.column_config.NumberColumn(format="%.2f"),
-        },
+        column_config=column_config,
         hide_index=True,
         use_container_width=True,
-        key=f"editor_{mode_selected}_{industry_filter or 'all'}"  # 建議改成固定 key 或加 or 'all' 避免重置
+        key=f"editor_{mode_selected}_{industry_filter or 'all'}"
     )
 
-    # 更新收藏列表
+    # 處理收藏變更
     new_favorites = set(edited_table[edited_table["收藏"] == True]["代碼"].tolist())
-    if new_favorites != st.session_state.favorites:
-        st.session_state.favorites = new_favorites
+
+    if is_favorite_mode:
+        # 收藏頁面：允許新增與移除
+        if new_favorites != st.session_state.favorites:
+            st.session_state.favorites = new_favorites
+            st.success("收藏清單已更新！")
+            # 可選擇是否 rerun，建議先不加，避免不必要跳動
+            # st.rerun()
+    else:
+        # 其他頁面：只允許新增，不允許移除
+        added_favorites = new_favorites - st.session_state.favorites
+        if added_favorites:
+            st.session_state.favorites.update(added_favorites)
+            st.success(f"已新增 {len(added_favorites)} 檔到收藏清單")
 
     st.divider()
     st.subheader("個股 K 線與趨勢線詳圖")
 
-    # ===== K 線圖 + 趨勢線 =====
     for item in display_results:
         with st.expander(
             f"{item['sid']} {item['名稱']} | {item['符合訊號']} | {item['趨勢']}",
@@ -750,7 +781,6 @@ if display_results:
             plot_df = item["df"].iloc[-60:].copy()
             fig = go.Figure()
 
-            # K線
             fig.add_trace(go.Candlestick(
                 x=plot_df.index,
                 open=plot_df['Open'],
@@ -762,20 +792,20 @@ if display_results:
                 decreasing_line_color="#26a69a"
             ))
 
-            # 趨勢線
-            if item["lines"]:
+            if item.get("lines"):
                 sh, ih, sl, il, x_vals = item["lines"]
                 x_dates = plot_df.index[-len(x_vals):]
                 fig.add_trace(go.Scatter(
                     x=x_dates, y=sh * x_vals + ih,
-                    mode='lines', line=dict(color='red', dash='dash', width=2), name='壓力線'
+                    mode='lines', line=dict(color='red', dash='dash', width=2),
+                    name='壓力線'
                 ))
                 fig.add_trace(go.Scatter(
                     x=x_dates, y=sl * x_vals + il,
-                    mode='lines', line=dict(color='lime', dash='dash', width=2), name='支撐線'
+                    mode='lines', line=dict(color='lime', dash='dash', width=2),
+                    name='支撐線'
                 ))
 
-            # 主題自動偵測
             try:
                 theme_setting = st.get_option("theme.base")
                 chart_template = "plotly_dark" if theme_setting == "dark" else "plotly_white"
@@ -788,9 +818,9 @@ if display_results:
                 xaxis_rangeslider_visible=False,
                 template=chart_template
             )
+
             st.plotly_chart(fig, use_container_width=True, key=f"chart_{item['sid']}")
 
-# ================= 沒有結果時的提示 =================
 else:
     if mode_selected == "⚖️ 條件篩選":
         st.info("尚未執行篩選，請設定條件後按「開始條件篩選」")
@@ -799,9 +829,7 @@ else:
     else:
         st.caption("目前無符合條件標的，或尚未執行分析")
 
-# ────────────────────────────────────────────────
-# 頁尾資訊
-# ────────────────────────────────────────────────
+# 頁尾資訊（保持不變）
 st.markdown("---")
 st.caption(
     "台股 Pro 旗艦戰情室 | "
@@ -814,5 +842,3 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
-
-
