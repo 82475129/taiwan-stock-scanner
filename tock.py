@@ -514,8 +514,9 @@ if industry_filter != "全部":
             category_value = value[1] if len(value) > 1 else "未知"
         else:
             category_value = "未知"
-        if category_value == industry_filter:
+        if industry_filter in str(category_value):
             filtered.append(s)
+
     symbol_list = filtered
     if not symbol_list:
         st.sidebar.warning(f"找不到產業為「{industry_filter}」的股票，請確認 JSON 是否包含 category 欄位")
@@ -713,3 +714,4 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
+
