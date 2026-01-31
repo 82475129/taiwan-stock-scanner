@@ -647,8 +647,9 @@ if display_results:
                 height=480,
                 margin=dict(l=10, r=10, t=30, b=10),
                 xaxis_rangeslider_visible=False,
-                template="plotly_dark" if "dark" in st.get_option("theme.base", "light") else "plotly_white"
+                template="plotly_dark" if "dark" in str(st.get_option("theme.base", "light")).lower() else "plotly_white"
             )
+
             st.plotly_chart(fig, use_container_width=True, key=f"chart_{item['sid']}")
 else:
     # 無結果提示
@@ -674,6 +675,7 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
+
 
 
 
