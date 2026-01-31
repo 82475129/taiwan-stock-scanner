@@ -98,6 +98,9 @@ def update_stock_json_from_finmind():
     r = requests.get(url, params=params, timeout=20)
     result = r.json()
 
+    if not result.get("success", True):
+        raise RuntimeError(f"FinMind API 失敗：{result.get('msg', result)}")
+
     if "data" not in result:
         raise ValueError(f"FinMind API 回傳異常：{result}")
 
@@ -671,6 +674,7 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
+
 
 
 
