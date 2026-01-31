@@ -535,10 +535,21 @@ if mode_selected == "🔍 手動查詢":
         placeholder="例：2330, 2454, 2603, 1216",
         key="manual_input_box"
     )
-    
+
     if manual_input:
         code_list = [c.strip().upper() for c in manual_input.replace("，", ",").split(",") if c.strip()]
-        if code_list:  # 避免空輸入重複跑
+
+        # 用排序後的代碼字串作為 key（忽略順序）
+        current_input_key = ",".join(sorted(code_list)) if code_list else ""
+
+        # 上次輸入的 key
+        last_input_key = st.session_state.get('last_manual_input_key', "")
+
+        # 如果輸入沒變，且有上次結果，就直接用上次結果
+        if current_input_key == last_input_key and 'last_manual_results' in st.session_state:
+            display_results = st.session_state.last_manual_results
+        else:
+            # 輸入改變或第一次跑 → 重新分析
             results_temp = []
             with st.spinner("正在分析手動輸入的標的..."):
                 for code in code_list:
@@ -551,15 +562,18 @@ if mode_selected == "🔍 手動查詢":
                     analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=True)
                     if analysis_result:
                         results_temp.append(analysis_result)
-            
-            # 只在有新輸入或結果改變時才更新
-            if results_temp != st.session_state.get('last_manual_results', []):
-                st.session_state.results_data = results_temp
-                st.session_state.last_manual_results = results_temp  # 額外暫存，避免重複計算
-            display_results = st.session_state.results_data
+
+            # 儲存結果與 key
+            st.session_state.last_manual_results = results_temp
+            st.session_state.last_manual_input_key = current_input_key
+            st.session_state.results_data = results_temp
+            display_results = results_temp
+
     else:
-        # 沒有輸入時，清空結果（可選）
+        # 輸入框清空時，清空結果
         display_results = []
+        st.session_state.pop('last_manual_results', None)
+        st.session_state.pop('last_manual_input_key', None)
         if 'results_data' in st.session_state:
             del st.session_state.results_data
 
@@ -885,3 +899,4 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
+
