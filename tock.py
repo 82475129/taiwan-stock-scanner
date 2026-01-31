@@ -479,9 +479,11 @@ st.title(f"📈 {mode_selected}")
 st.caption(f"目前模式：{mode_selected} | 產業：{industry_filter} | 總標的：{len(full_db)} 檔")
 
 # ================= 股票清單與產業篩選 =================
+# ================= 股票清單與產業篩選 =================
 symbol_list = list(full_db.keys())
 
-if industry_filter != "全部":
+# 只有當不是收藏模式且選擇了特定產業才篩選
+if mode_selected != "❤️ 收藏追蹤" and industry_filter != "全部":
     filtered = []
     for s in symbol_list:
         value = full_db.get(s, {})
@@ -493,8 +495,8 @@ if industry_filter != "全部":
 
     if not symbol_list:
         st.warning(f"⚠️ 找不到產業為「{industry_filter}」的股票，請確認 JSON 是否包含 category 或名稱拼寫正確")
-        # 為了避免空列表，仍保留全部股票
         symbol_list = list(full_db.keys())
+
 
 # ================= 各模式邏輯 =================
 display_results = []
@@ -753,4 +755,5 @@ else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 
 st.caption("祝交易順利！📈")
+
 
