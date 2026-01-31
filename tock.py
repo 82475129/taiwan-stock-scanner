@@ -755,7 +755,7 @@ if display_results:
         "收藏": st.column_config.CheckboxColumn(
             "❤️ 收藏",
             width="small",
-            disabled=not is_favorite_mode   # 只有收藏頁面完全可編輯
+            disabled=False  # 所有頁面都可按，讓未收藏的可以勾
         ),
         "Yahoo": st.column_config.LinkColumn("Yahoo", display_text="🔍 Yahoo", width="medium"),
         "現價": st.column_config.NumberColumn(format="%.2f"),
@@ -771,6 +771,7 @@ if display_results:
         key=f"editor_{mode_selected}_{industry_filter or 'all'}"
     )
 
+    # 取得使用者在表格中勾選的結果
     new_checked = set(edited_table[edited_table["收藏"] == True]["代碼"].tolist())
 
     col1, col2 = st.columns([1, 4])
@@ -780,26 +781,30 @@ if display_results:
             updated = False
 
             if is_favorite_mode:
+                # 收藏頁面：允許完整更新（新增 + 移除）
                 if new_checked != current_favs:
                     st.session_state.favorites = new_checked
                     updated = True
                     st.success(f"收藏清單已更新！目前總共 {len(new_checked)} 檔")
             else:
+                # 其他頁面：只允許新增，不允許移除
                 to_add = new_checked - current_favs
                 if to_add:
                     st.session_state.favorites.update(to_add)
                     updated = True
-                    st.success(f"已新增 {len(to_add)} 檔到收藏清單")
+                    st.success(f"已新增 {len(to_add)} 檔到收藏清單！")
+                else:
+                    st.info("沒有新的股票被勾選加入收藏")
 
             if updated:
-                st.rerun()
+                st.rerun()  # 儲存後刷新畫面，讓勾選狀態即時顯示
 
     with col2:
         pending_add = len(new_checked - st.session_state.favorites)
         if pending_add > 0 and not is_favorite_mode:
             st.caption(f"待新增收藏：{pending_add} 檔（按上方按鈕儲存）")
         elif pending_add == 0 and not is_favorite_mode:
-            st.caption("目前無新收藏變更")
+            st.caption("目前無新收藏變更（已收藏的無法在此取消，請至收藏頁處理）")
 
     st.divider()
     st.subheader("個股 K 線與趨勢線詳圖")
