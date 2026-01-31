@@ -217,24 +217,17 @@ price_cache = st.session_state.price_cache
 # 抓取價格資料（優先本地快取）
 # ================================
 def fetch_price(symbol: str) -> pd.DataFrame:
-    """
-    優先從本地快取取資料，若無則即時下載並存入快取
-    """
     if symbol in price_cache:
         df = price_cache[symbol]
-        if isinstance(df, pd.DataFrame) and not df.empty and 'Close' in df.columns:
+        if isinstance(df, pd.DataFrame) and not df.empty:
             return df.copy()
-    # 即時下載
     try:
-        df = yf.download(
-            symbol,
-            period="1y",
-            interval="1d",
-            auto_adjust=True,
-            progress=False,
-            threads=False
-        )
+        df = yf.download(symbol, period="1y", interval="1d", auto_adjust=True, progress=False, threads=False)
         if not df.empty:
+            # ✅ 新增：壓平 MultiIndex，防止 df['Close'] 變成 DataFrame 導致後續崩潰
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+            
             price_cache[symbol] = df.copy()
             save_price_cache(price_cache)
             st.session_state.last_cache_update = datetime.now()
@@ -246,55 +239,50 @@ def fetch_price(symbol: str) -> pd.DataFrame:
 # ================================
 # 核心技術分析函式
 # ================================
-def run_analysis(
-    sid: str,
-    name: str,
-    df: pd.DataFrame,
-    cfg: dict,
-    is_manual: bool = False
-) -> dict | None:
-    """
-    對單一股票進行技術分析
-    回傳符合條件的結果字典，或 None
-    """
+def run_analysis(sid: str, name: str, df: pd.DataFrame, cfg: dict, is_manual: bool = False) -> dict | None:
     if df.empty or 'Close' not in df.columns or len(df) < 60:
         return None
     try:
-        # 最新價格與均線
+        # ✅ 核心修正：解決 6423.TW "Series is ambiguous"
+        # 所有的比較必須針對單一數值 (.iloc[-1])
         current_price = float(df['Close'].iloc[-1])
-        ma20_val = df['Close'].rolling(window=20).mean().iloc[-1]
-        ma60_val = df['Close'].rolling(window=60).mean().iloc[-1]
+        
+        # 計算均線並取最後一個數值
+        ma20_series = df['Close'].rolling(window=20).mean()
+        ma60_series = df['Close'].rolling(window=60).mean()
+        
+        ma20_val = float(ma20_series.iloc[-1])
+        ma60_val = float(ma60_series.iloc[-1])
+        
         trend_label = '🔴 多頭排列' if ma20_val > ma60_val else '🟢 空頭排列'
+        
         # 最近 lb 天的壓力/支撐線
         lookback = cfg.get("p_lookback", 15)
         if len(df) < lookback:
             return None
+        
         x_arr = np.arange(lookback)
-        high_prices = df["High"].iloc[-lookback:].values
-        low_prices = df["Low"].iloc[-lookback:].values
+        high_prices = df["High"].iloc[-lookback:].values.flatten() # 確保是一維
+        low_prices = df["Low"].iloc[-lookback:].values.flatten()
+        
         slope_high, intercept_high, _, _, _ = linregress(x_arr, high_prices)
         slope_low, intercept_low, _, _, _ = linregress(x_arr, low_prices)
-        # 訊號收集
+        
         signals_list = []
-        # 三角收斂
+        # 使用單一數值進行判斷
         if slope_high < -0.001 and slope_low > 0.001:
             signals_list.append("📐三角收斂")
-        # 箱型整理
         if abs(slope_high) < 0.03 and abs(slope_low) < 0.03:
             signals_list.append("📦箱型整理")
+            
         # 爆量判斷
         if len(df) >= 6 and cfg.get("check_vol", True):
-            vol_last5 = df["Volume"].iloc[-6:-1]  # 前5天
-            if not vol_last5.empty:
-                vol_last5_mean = vol_last5.mean()
-                vol_today = df["Volume"].iloc[-1]
-                # 確保都是數值
-                if pd.notna(vol_last5_mean) and pd.notna(vol_today):
-                    if vol_today > vol_last5_mean * 1.5:
-                        signals_list.append("🚀今日爆量")
+            vol_today = float(df["Volume"].iloc[-1])
+            vol_avg5 = float(df["Volume"].iloc[-6:-1].mean())
+            if vol_today > vol_avg5 * 1.5:
+                signals_list.append("🚀今日爆量")
 
-
-        # 是否顯示邏輯
+        # 顯示過濾邏輯
         should_display = is_manual
         if not is_manual:
             has_valid_signal = any([
@@ -303,11 +291,13 @@ def run_analysis(
                 cfg.get("check_vol", False) and "🚀" in "".join(signals_list)
             ])
             should_display = has_valid_signal
-            # 額外過濾
+            
+            # ✅ 同樣使用單一數值比較
             if cfg.get("f_ma_filter", False) and current_price < ma20_val:
                 should_display = False
             if current_price < cfg.get("min_price", 0):
                 should_display = False
+                
         if should_display:
             return {
                 "收藏": sid in st.session_state.favorites,
@@ -323,8 +313,8 @@ def run_analysis(
                 "lines": (slope_high, intercept_high, slope_low, intercept_low, x_arr)
             }
     except Exception as exc:
-        st.warning(f"分析 {sid} 失敗：{str(exc)}")
-        traceback.print_exc(file=sys.stderr)
+        # 不要讓單一股票的失敗毀掉整個迴圈
+        return None
     return None
 
 # ================================
@@ -574,7 +564,7 @@ if mode_selected == "❤️ 收藏追蹤":
     display_results = [item for item in display_results if item["sid"] in st.session_state.favorites]
 
 if display_results:
-    # 表格資料準備
+    # --- A. 表格顯示區 ---
     table_records = []
     for item in display_results:
         table_records.append({
@@ -589,6 +579,7 @@ if display_results:
             "Yahoo": item["Yahoo"]
         })
     df_table = pd.DataFrame(table_records)
+    
     edited_table = st.data_editor(
         df_table,
         column_config={
@@ -602,26 +593,33 @@ if display_results:
         use_container_width=True,
         key=f"editor_{mode_selected}_{industry_filter}"
     )
+
     # 處理即時收藏變更
     new_favorites = set(edited_table[edited_table["收藏"] == True]["代碼"].tolist())
     if new_favorites != st.session_state.favorites:
         st.session_state.favorites = new_favorites
         st.rerun()
+
     st.divider()
-    # K線圖區
+
+    # --- B. K線圖詳情區 ---
     st.subheader("個股 K 線與趨勢線詳圖")
     for item in display_results:
+        # ⚠️ 注意這裡：with 必須縮排在 for 裡面
         with st.expander(
             f"{item['sid']} {item['名稱']} | {item['符合訊號']} | {item['趨勢']}",
             expanded=False
         ):
+            # 1. 顯示數據指標
             cols = st.columns(3)
             cols[0].metric("現價", f"{item['現價']:.2f} 元")
             cols[1].metric("MA20", f"{item['MA20']:.2f}")
             cols[2].metric("趨勢", item["趨勢"])
-            # 繪製 K 線（最近 60 天）
+            
+            # 2. 準備繪圖數據
             plot_df = item["df"].iloc[-60:].copy()
             fig = go.Figure()
+            
             fig.add_trace(go.Candlestick(
                 x=plot_df.index,
                 open=plot_df['Open'],
@@ -632,33 +630,38 @@ if display_results:
                 increasing_line_color="#ef5350",
                 decreasing_line_color="#26a69a"
             ))
-            # 加入壓力與支撐趨勢線
+            
+            # 3. 趨勢線邏輯
             sh, ih, sl, il, x_vals = item["lines"]
             x_dates = plot_df.index[-len(x_vals):]
+            
             fig.add_trace(go.Scatter(
-                x=x_dates,
-                y=sh * x_vals + ih,
-                mode='lines',
-                line=dict(color='red', dash='dash', width=2),
-                name='壓力線'
+                x=x_dates, y=sh * x_vals + ih,
+                mode='lines', line=dict(color='red', dash='dash', width=2), name='壓力線'
             ))
+            
             fig.add_trace(go.Scatter(
-                x=x_dates,
-                y=sl * x_vals + il,
-                mode='lines',
-                line=dict(color='lime', dash='dash', width=2),
-                name='支撐線'
+                x=x_dates, y=sl * x_vals + il,
+                mode='lines', line=dict(color='lime', dash='dash', width=2), name='支撐線'
             ))
+            
+            # 4. 安全主題判斷
+            try:
+                theme_setting = st.get_option("theme.base")
+                chart_template = "plotly_dark" if theme_setting == "dark" else "plotly_white"
+            except:
+                chart_template = "plotly_white"
+                
             fig.update_layout(
                 height=480,
                 margin=dict(l=10, r=10, t=30, b=10),
                 xaxis_rangeslider_visible=False,
-                template="plotly_dark" if "dark" in str(st.get_option("theme.base", "light")).lower() else "plotly_white"
+                template=chart_template
             )
 
             st.plotly_chart(fig, use_container_width=True, key=f"chart_{item['sid']}")
 else:
-    # 無結果提示
+    # --- C. 無結果提示區 ---
     if mode_selected == "⚖️ 條件篩選":
         st.info("尚未執行篩選，請設定條件後按「開始條件篩選」")
     elif mode_selected == "❤️ 收藏追蹤":
@@ -681,12 +684,4 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
-
-
-
-
-
-
-
-
 
