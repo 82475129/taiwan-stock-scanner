@@ -510,7 +510,7 @@ st.caption(f"目前模式：{mode_selected} | 產業：{industry_filter} | 總�
 symbol_list = list(full_db.keys())
 
 # 只有當不是收藏模式且選擇了特定產業才篩選
-if mode_selected != "❤️ 收藏追蹤" and industry_filter != "全部":
+if mode_selected != industry_filter != "全部":
     filtered = []
     for s in symbol_list:
         value = full_db.get(s, {})
@@ -815,3 +815,4 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
+
