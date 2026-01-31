@@ -284,13 +284,15 @@ def run_analysis(
             signals_list.append("📦箱型整理")
         # 爆量判斷
         if len(df) >= 6 and cfg.get("check_vol", True):
-            vol_last5 = df["Volume"].iloc[-6:-1]
-                if not vol_last5.empty:
+            vol_last5 = df["Volume"].iloc[-6:-1]  # 前5天
+            if not vol_last5.empty:
                 vol_last5_mean = vol_last5.mean()
                 vol_today = df["Volume"].iloc[-1]
-                if np.isscalar(vol_today) and np.isscalar(vol_last5_mean):
+                # 確保都是數值
+                if pd.notna(vol_last5_mean) and pd.notna(vol_today):
                     if vol_today > vol_last5_mean * 1.5:
                         signals_list.append("🚀今日爆量")
+
 
         # 是否顯示邏輯
         should_display = is_manual
@@ -679,6 +681,7 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
+
 
 
 
