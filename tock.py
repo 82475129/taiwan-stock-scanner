@@ -41,6 +41,26 @@ import traceback
 import requests
 
 # ================================
+# 自動清理非印刷字元（全形空格、不可見字元）
+# ================================
+import re
+import sys
+
+def clean_nonprintable(text: str) -> str:
+    # 移除所有不可見字元（包括全形空格 U+00A0）
+    return re.sub(r'[\u00A0\u200B-\u200D\uFEFF]', '', text)
+
+# 如果想自動清理自己讀入的程式檔案
+this_file = sys.argv[0] if len(sys.argv) > 0 else __file__
+with open(this_file, 'r', encoding='utf-8') as f:
+    content = f.read()
+cleaned = clean_nonprintable(content)
+with open(this_file, 'w', encoding='utf-8') as f:
+    f.write(cleaned)
+print("✅ 已清理非印刷字元與全形空格")
+
+
+# ================================
 # 忽略常見警告，讓介面更乾淨
 # ================================
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -684,5 +704,6 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
+
 
 
