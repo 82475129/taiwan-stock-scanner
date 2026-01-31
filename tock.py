@@ -594,33 +594,33 @@ elif mode_selected == "❤️ 收藏追蹤":
                 st.session_state.results_data = temp_results
             st.success(f"更新完成，共 {len(temp_results)} 檔")
         
-        # 生成 display_results
         # 生成 display_results（收藏股模式，強制顯示所有收藏股）
-for sym in fav_syms:
-    cached = next((x for x in st.session_state.results_data if x["sid"] == sym), None)
-    if cached:
-        display_results.append(cached)
-    else:
-        df_data = fetch_price(sym)
-        stock_name = full_db.get(sym, {}).get("name", sym)
-        # 這裡 is_manual=True，強制回傳分析結果
-        analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=True)
-        # 如果 analysis_result 是 None，也補一個最基本字典，避免空白
-        if analysis_result is None:
-            analysis_result = {
-                "收藏": True,
-                "sid": sym,
-                "名稱": stock_name,
-                "現價": df_data['Close'].iloc[-1] if not df_data.empty else 0,
-                "趨勢": "🔍 觀察中",
-                "MA20": None,
-                "MA60": None,
-                "符合訊號": "🔍 觀察中",
-                "Yahoo": f"https://tw.stock.yahoo.com/quote/{sym.split('.')[0]}",
-                "df": df_data.copy() if not df_data.empty else pd.DataFrame(),
-                "lines": None
-            }
-        display_results.append(analysis_result)
+        for sym in fav_syms:
+            cached = next((x for x in st.session_state.results_data if x["sid"] == sym), None)
+            if cached:
+                display_results.append(cached)
+            else:
+                df_data = fetch_price(sym)
+                stock_name = full_db.get(sym, {}).get("name", sym)
+                # 這裡 is_manual=True，強制回傳分析結果
+                analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=True)
+                # 如果 analysis_result 是 None，也補一個最基本字典，避免空白
+                if analysis_result is None:
+                    analysis_result = {
+                        "收藏": True,
+                        "sid": sym,
+                        "名稱": stock_name,
+                        "現價": df_data['Close'].iloc[-1] if not df_data.empty else 0,
+                        "趨勢": "🔍 觀察中",
+                        "MA20": None,
+                        "MA60": None,
+                        "符合訊號": "🔍 觀察中",
+                        "Yahoo": f"https://tw.stock.yahoo.com/quote/{sym.split('.')[0]}",
+                        "df": df_data.copy() if not df_data.empty else pd.DataFrame(),
+                        "lines": None
+                    }
+                display_results.append(analysis_result)
+
 
 
 # ================= 其他模式（條件篩選等） =================
@@ -751,6 +751,7 @@ else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 
 st.caption("祝交易順利！📈")
+
 
 
 
