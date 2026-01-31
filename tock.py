@@ -503,6 +503,12 @@ elif mode_selected == "⚖️ 條件篩選":
 # ────────────────────────────────────────────────
 #                 模式執行區塊
 # ────────────────────────────────────────────────
+# ────────────────────────────────────────────────
+# 預設 display_results，避免 NameError
+# ────────────────────────────────────────────────
+display_results = []
+
+# ================= 自動掃描模式 =================
 if mode_selected == "⚡ 自動掃描":
     st_autorefresh(interval=60000, key="auto_scan_refresh")
     st.warning("自動掃描模式啟動，每 60 秒更新一次（限制前 150 檔避免過載）")
@@ -519,16 +525,16 @@ if mode_selected == "⚡ 自動掃描":
             if analysis_result:
                 temp_results.append(analysis_result)
     
-    # 只更新 results_data，不動收藏列表
+    # 更新結果資料
     st.session_state.results_data = temp_results
+    display_results = temp_results
 
-
+# ================= 收藏追蹤模式 =================
 elif mode_selected == "❤️ 收藏追蹤":
     fav_syms = list(st.session_state.favorites)
     
     if not fav_syms:
         st.info("目前沒有收藏股票。從其他模式點擊 ❤️ 加入收藏吧！")
-        display_results = []
     else:
         st.subheader(f"收藏清單（{len(fav_syms)} 檔）")
         
@@ -545,10 +551,8 @@ elif mode_selected == "❤️ 收藏追蹤":
                 st.session_state.results_data = temp_results
             st.success(f"更新完成，共 {len(temp_results)} 檔")
         
-        # 收藏模式永遠生成 display_results
-        display_results = []
+        # 生成 display_results
         for sym in fav_syms:
-            # 先找 results_data 裡有沒有已抓的資料
             cached = next((x for x in st.session_state.results_data if x["sid"] == sym), None)
             if cached:
                 display_results.append(cached)
@@ -559,6 +563,8 @@ elif mode_selected == "❤️ 收藏追蹤":
                 if analysis_result:
                     display_results.append(analysis_result)
 
+# ================= 其他模式（條件篩選等） =================
+# display_results 已是空列表，不會報錯
 
 # ────────────────────────────────────────────────
 #                 結果呈現區塊
@@ -580,6 +586,7 @@ if display_results:
     
     df_table = pd.DataFrame(table_records)
     
+    # ===== 表格編輯器 =====
     edited_table = st.data_editor(
         df_table,
         column_config={
@@ -603,6 +610,7 @@ if display_results:
     st.divider()
     st.subheader("個股 K 線與趨勢線詳圖")
     
+    # ===== K 線圖 + 趨勢線 =====
     for item in display_results:
         with st.expander(
             f"{item['sid']} {item['名稱']} | {item['符合訊號']} | {item['趨勢']}",
@@ -616,6 +624,7 @@ if display_results:
             plot_df = item["df"].iloc[-60:].copy()
             fig = go.Figure()
             
+            # K線
             fig.add_trace(go.Candlestick(
                 x=plot_df.index,
                 open=plot_df['Open'],
@@ -627,6 +636,7 @@ if display_results:
                 decreasing_line_color="#26a69a"
             ))
             
+            # 趨勢線
             sh, ih, sl, il, x_vals = item["lines"]
             x_dates = plot_df.index[-len(x_vals):]
             
@@ -634,12 +644,12 @@ if display_results:
                 x=x_dates, y=sh * x_vals + ih,
                 mode='lines', line=dict(color='red', dash='dash', width=2), name='壓力線'
             ))
-            
             fig.add_trace(go.Scatter(
                 x=x_dates, y=sl * x_vals + il,
                 mode='lines', line=dict(color='lime', dash='dash', width=2), name='支撐線'
             ))
             
+            # 主題自動偵測
             try:
                 theme_setting = st.get_option("theme.base")
                 chart_template = "plotly_dark" if theme_setting == "dark" else "plotly_white"
@@ -652,8 +662,10 @@ if display_results:
                 xaxis_rangeslider_visible=False,
                 template=chart_template
             )
+            
             st.plotly_chart(fig, use_container_width=True, key=f"chart_{item['sid']}")
 
+# ================= 沒有結果時的提示 =================
 else:
     if mode_selected == "⚖️ 條件篩選":
         st.info("尚未執行篩選，請設定條件後按「開始條件篩選」")
@@ -679,4 +691,5 @@ else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 
 st.caption("祝交易順利！📈")
+
 
