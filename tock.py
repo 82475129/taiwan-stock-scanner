@@ -552,32 +552,47 @@ if mode_selected == "🔍 手動查詢":
 # -------- 條件篩選模式 --------
 elif mode_selected == "⚖️ 條件篩選":
     st.info("請設定左側條件，然後點擊下方按鈕開始全市場掃描")
-    if st.button("🚀 開始條件篩選", type="primary", use_container_width=True):
-        max_scan = analysis_cfg.get("scan_limit", len(symbol_list))
-        scan_symbols = symbol_list[:max_scan]
-        temp_results = []
+    
+    # 如果已經有暫存結果，先顯示它
+    if 'condition_scan_results' not in st.session_state:
+        st.session_state.condition_scan_results = []
 
-        with st.status(f"掃描中...（{len(scan_symbols)} 檔，{industry_filter}類）", expanded=True) as scan_status:
-            progress_bar = st.progress(0)
-            for idx, sym in enumerate(scan_symbols):
-                df_data = fetch_price(sym)
-                stock_name = full_db.get(sym, {}).get("name", "未知")
-                analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=False)
-                if analysis_result:
-                    temp_results.append(analysis_result)
+    display_results = st.session_state.condition_scan_results
 
-                progress_bar.progress((idx + 1) / len(scan_symbols))
-                if (idx + 1) % 50 == 0:
-                    time.sleep(0.05)
-
-            st.session_state.results_data = temp_results
-            if not temp_results:
-                st.info("⚠️ 沒有符合條件的股票，請調整篩選條件")
-            scan_status.update(
-                label=f"掃描完成！共找到 {len(temp_results)} 檔符合條件",
-                state="complete"
-            )
+    col1, col2 = st.columns([3, 1])
+    with col1:
+        if st.button("🚀 開始條件篩選 / 重新掃描", type="primary", use_container_width=True):
+            max_scan = analysis_cfg.get("scan_limit", len(symbol_list))
+            scan_symbols = symbol_list[:max_scan]
+            temp_results = []
+            with st.status(f"掃描中...（{len(scan_symbols)} 檔，{industry_filter}類）", expanded=True) as scan_status:
+                progress_bar = st.progress(0)
+                for idx, sym in enumerate(scan_symbols):
+                    df_data = fetch_price(sym)
+                    stock_name = full_db.get(sym, {}).get("name", "未知")
+                    analysis_result = run_analysis(sym, stock_name, df_data, analysis_cfg, is_manual=False)
+                    if analysis_result:
+                        temp_results.append(analysis_result)
+                    progress_bar.progress((idx + 1) / len(scan_symbols))
+                    if (idx + 1) % 50 == 0:
+                        time.sleep(0.05)
+                st.session_state.condition_scan_results = temp_results  # 存到專屬暫存
+                st.session_state.results_data = temp_results
+                if not temp_results:
+                    st.info("⚠️ 沒有符合條件的股票，請調整篩選條件")
+                scan_status.update(
+                    label=f"掃描完成！共找到 {len(temp_results)} 檔符合條件",
+                    state="complete"
+                )
             display_results = temp_results
+            st.rerun()  # 掃描完成後主動 rerun 一次，確保畫面更新
+
+    with col2:
+        if st.button("🗑️ 清空結果", type="secondary"):
+            st.session_state.condition_scan_results = []
+            if 'results_data' in st.session_state:
+                del st.session_state.results_data
+            st.rerun()
 
 # -------- 自動掃描模式 --------
 elif mode_selected == "⚡ 自動掃描":
@@ -861,3 +876,4 @@ if st.session_state.last_cache_update:
 else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 st.caption("祝交易順利！📈")
+
