@@ -574,6 +574,7 @@ elif mode_selected == "⚡ 自動掃描":
 
 # -------- 收藏追蹤模式 --------
 elif mode_selected == "❤️ 收藏追蹤":
+    industry_filter = None  # 忽略產業篩選
     fav_syms = list(st.session_state.favorites)
 
     if not fav_syms:
@@ -752,3 +753,4 @@ else:
     st.caption("價格資料尚未更新，請點擊側邊欄更新按鈕")
 
 st.caption("祝交易順利！📈")
+
